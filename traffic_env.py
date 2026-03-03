@@ -11,30 +11,31 @@ class TrafficControlEnv(gym.Env):
     """
     metadata = {'render.modes': ['human']}
 
-    def __init__(self):
+    def __init__(self, curriculum_step=1):
         super(TrafficControlEnv, self).__init__()
         
         self.city = City()
         self.dt = 0.1
         self.max_steps = 1000
         self.current_step = 0
+        self.episode_count = 0
+        self.collision_count = 0
+        self.curriculum_step = curriculum_step
         
-        # Action Space: 5 continuous weights for the controller terms
-        # Range: [-2.0, 2.0] to allow for both positive and negative feedback if needed, 
-        # though typically gains are positive. adjust as necessary.
-        self.action_space = spaces.Box(low=0.0, high=2.0, shape=(5,), dtype=np.float32)
+        # Action Space: 5 continuous weights - constrained to [0.1, 1.5] for safety
+        self.action_space = spaces.Box(low=0.1, high=1.5, shape=(5,), dtype=np.float32)
 
-        # Observation Space: 
-        # Mean Gap Error, Mean Velocity Error (Front), Mean Velocity Error (Back), Mean Energy, Collision Flag
-        # Using a simple fleet-average observation for now as requested.
-        # [avg_gap_error, avg_vel_error, avg_acc, avg_energy_rate]
+        # Observation Space: [avg_vel_error, vel_std, avg_acc, spare]
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32)
 
-        # Simulation Parameters (matching run_headless.py defaults)
+        # Curriculum learning: start with fewer cars, gradually increase
+        self.base_num_cars = 5
+        self.max_num_cars = 15
+        
         self.sim_params = {
-            'num_cars': 15,
+            'num_cars': min(self.base_num_cars + curriculum_step, self.max_num_cars),
             'kd': 0.9, 'kv': 0.6, 'kc': 0.4,
-            'v_des': 15.0, # m/s
+            'v_des': 15.0,
             'min_dis': 5.0,
             'reaction_time': 1.5
         }
@@ -67,10 +68,14 @@ class TrafficControlEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         
+        # Ensure action is numpy array and clipped to valid range
+        if not isinstance(action, np.ndarray):
+            action = np.array(action, dtype=np.float32)
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        
         # Apply the weights (action) to ALL cars in the fleet
-        weights = action
         for car in self.city.cars:
-            car.set_weights(weights)
+            car.set_weights(action)
             
         # Run simulation step
         self.city.run(self.dt)
@@ -81,9 +86,14 @@ class TrafficControlEnv(gym.Env):
         terminated = self._check_collision()
         truncated = self.current_step >= self.max_steps
         
+        if terminated:
+            self.collision_count += 1
+        
         info = {
             "avg_speed": np.mean([c.velocity for c in self.city.cars]),
-            "collisions": 1 if terminated else 0
+            "min_gap": self._get_min_gap(),
+            "collisions": 1 if terminated else 0,
+            "episode_collision_count": self.collision_count
         }
         
         return obs, reward, terminated, truncated, info
@@ -135,38 +145,70 @@ class TrafficControlEnv(gym.Env):
         return np.array([avg_vel_error, vel_std, avg_acc, 0.0], dtype=np.float32)
 
     def _calculate_reward(self):
-        # Reward Function:
-        # - Negative Velocity Error (encourage target speed)
-        # - Negative Acceleration Magnitude (encourage smoothness/efficiency)
-        # - Negative Collision penalty
+        # Improved Reward Function:
+        # Encourages: velocity tracking, smoothness, stability, gap maintenance
+        # Penalizes: collisions (heavily), instability
         
         cars = self.city.cars
-        avg_vel_error = np.mean([abs(c.velocity - self.sim_params['v_des']) for c in cars])
-        avg_jerk_proxy = np.mean([abs(c.acceleration) for c in cars]) # Smoothness
+        if not cars:
+            return -100.0
         
-        reward = -1.0 * avg_vel_error - 0.1 * avg_jerk_proxy
+        # 1. Velocity tracking (primary objective)
+        vel_errors = [abs(c.velocity - self.sim_params['v_des']) for c in cars]
+        avg_vel_error = np.mean(vel_errors)
+        vel_reward = -2.0 * avg_vel_error  # Higher weight
         
+        # 2. Smoothness (acceleration should be minimal)
+        avg_acc = np.mean([abs(c.acceleration) for c in cars])
+        smoothness_reward = -0.2 * avg_acc
+        
+        # 3. Stability (velocity deviation across fleet)
+        vel_std = np.std([c.velocity for c in cars])
+        stability_reward = -0.1 * vel_std
+        
+        # 4. Gap safety (encourage maintaining min distances)
+        min_gap = self._get_min_gap()
+        if min_gap < 1.0:
+            gap_penalty = -5.0 * (1.0 - min_gap)
+        elif min_gap < 2.0:
+            gap_penalty = -2.0
+        else:
+            gap_penalty = 0.0
+        
+        # 5. Collision detection - catastrophic
         if self._check_collision():
-            reward -= 1000.0
-            
+            return -10000.0
+        
+        # Total reward
+        reward = vel_reward + smoothness_reward + stability_reward + gap_penalty
+        
+        # Success bonus at episode end
+        if self.current_step == self.max_steps - 1:
+            reward += 100.0
+        
         return reward
 
-    def _check_collision(self):
-        # Simple collision check: if any car gap < min_safe_dist
-        # We need to compute gaps again or rely on City log. 
-        # Since City.run doesn't return collision flag, we iterate.
+    def _get_min_gap(self):
+        """Get minimum gap among all consecutive cars."""
+        if not self.city.roads:
+            return 1000.0
         
-        road_len = self.city.roads[0].length # Assuming 1 road
+        road_len = self.city.roads[0].length
         cars = sorted(self.city.cars, key=lambda c: c.pos)
+        min_gap = float('inf')
         
         for i in range(len(cars)):
             c1 = cars[i]
-            c2 = cars[(i+1)%len(cars)]
-            
+            c2 = cars[(i+1) % len(cars)]
             gap = (c2.pos - c1.pos - c1.length) % road_len
-            if gap < 0.5: # Collision threshold
-                return True
-        return False
+            min_gap = min(min_gap, gap)
+        
+        return min_gap if min_gap != float('inf') else 1000.0
+    
+    def _check_collision(self):
+        """Collision check with safety margin. Threshold is 0.5m."""
+        min_gap = self._get_min_gap()
+        return min_gap < 0.5
 
     def render(self):
         pass
