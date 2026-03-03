@@ -38,7 +38,7 @@ class City:
         # Place cars at intervals along the road
         for i in range(int(car_number)):
             # Initial velocity, position, and sizeof each car
-            velocity = 0
+            velocity = v_des
             car_length = 4
             headway = min_dis + velocity * reaction_time
             pos = 1000 - (car_number - 1 -i) * (car_length + headway) 
@@ -255,7 +255,56 @@ class City:
             
             back_car = min(cars_same_road, key=gap_from, default=None) if cars_same_road else None
 
-            if self.model == 'ACC' or ((self.model == 'BCC' or self.model=="ACC+BCC") and idx == len(self.cars) - 1):
+            # RL-based Dynamic Weight Control
+            if car.weights is not None:
+                car.mode = 'RL-W'
+                road_length = car.current_road.length
+                
+                # Retrieve neighbors (handling wrap-around distance)
+                # Front Car
+                if front_car:
+                    front_gap = (front_car.pos - car.pos - car.length) % road_length
+                    front_vel = front_car.velocity
+                else:
+                    front_gap = 1000.0 # Large gap if no car
+                    front_vel = car.velocity # No relative velocity
+                
+                # Back Car    
+                if back_car:
+                    back_gap = (car.pos - back_car.pos - back_car.length) % road_length
+                    back_vel = back_car.velocity
+                else:
+                    back_gap = 1000.0 
+                    back_vel = car.velocity
+
+                # Current State
+                ego_vel = car.velocity
+                desired_gap = self.min_dis + ego_vel * self.reaction_time
+                target_vel = car.target_speed if car.target_speed is not None else self.v_des
+
+                # Weights from RL Agent
+                w1, w2, w3, w4, w5 = car.weights
+                
+                # 5-Term Control Logic
+                # 1. Front Gap Error (Maintain distance to front)
+                term1 = w1 * (front_gap - desired_gap)
+                
+                # 2. Back Gap Error (Maintain distance to back)
+                term2 = w2 * (desired_gap - back_gap)
+                
+                # 3. Front Velocity Match
+                term3 = w3 * (front_vel - ego_vel)
+                
+                # 4. Back Velocity Match
+                term4 = w4 * (back_vel - ego_vel)
+                
+                # 5. Target Velocity Match
+                term5 = w5 * (target_vel - ego_vel)
+
+                acc = term1 + term2 + term3 + term4 + term5
+                acc = max(self.min_a, min(self.max_a, acc))
+            
+            elif self.model == 'ACC' or ((self.model == 'BCC' or self.model=="ACC+BCC") and idx == len(self.cars) - 1):
                 car.mode = 'ACC'
                 car_pos, car_vel = car_states[idx]
                 front_idx = self.cars.index(front_car)

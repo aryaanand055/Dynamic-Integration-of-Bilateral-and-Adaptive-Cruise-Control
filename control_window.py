@@ -118,21 +118,21 @@ class ControlWindow:
         self.city_accbcc = City()
 
         # Visualization for ACC (top)
-        self.painter_acc = TransportationPainter(self.scrollable_frame, self.city_acc.roads, self.city_acc.cars, width=1500, height=300, bg='white')
+        self.painter_acc = TransportationPainter(self.scrollable_frame, self.city_acc.roads, self.city_acc.cars, width=1500, height=125, bg='white')
         self.painter_acc.pack()
         tk.Label(self.scrollable_frame, text="ACC").pack()
         self.energy_label_acc = tk.Label(self.scrollable_frame, text="Total Energy : 0 KwH", font=("Arial", 10, "bold"))
         self.energy_label_acc.pack()
 
         # # Visualization for BCC (bottom)
-        self.painter_bcc = TransportationPainter(self.scrollable_frame, self.city_bcc.roads, self.city_bcc.cars, width=1500, height=300, bg='white')
+        self.painter_bcc = TransportationPainter(self.scrollable_frame, self.city_bcc.roads, self.city_bcc.cars, width=1500, height=125, bg='white')
         self.painter_bcc.pack()
         tk.Label(self.scrollable_frame, text="BCC").pack()
         self.energy_label_bcc = tk.Label(self.scrollable_frame, text="Total Energy : 0 KwH", font=("Arial", 10, "bold"))
         self.energy_label_bcc.pack()
 
         # Visualization for ACC and BCC velocity profiles
-        self.painter_accbcc = TransportationPainter(self.scrollable_frame, self.city_accbcc.roads, self.city_accbcc.cars, width=1500, height=300, bg='white')
+        self.painter_accbcc = TransportationPainter(self.scrollable_frame, self.city_accbcc.roads, self.city_accbcc.cars, width=1500, height=125, bg='white')
         self.painter_accbcc.pack()
         tk.Label(self.scrollable_frame, text="ACC and BCC Combined").pack()
         self.energy_label_accbcc = tk.Label(self.scrollable_frame, text="Total Energy : 0 KwH", font=("Arial", 10, "bold"))

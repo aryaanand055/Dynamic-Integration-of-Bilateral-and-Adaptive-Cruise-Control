@@ -26,6 +26,14 @@ class Car:
         self.gap_history = []
         self.x_history = []
         self.switch_events = []
+        self.weights = None
+        self.target_speed = None
+
+    def set_weights(self, weights):
+        self.weights = weights
+
+    def get_weights(self):
+        return self.weights
 
     def get_length(self):
         return self.length
