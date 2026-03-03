@@ -53,14 +53,14 @@ def train():
     model = TD3(
         "MlpPolicy", 
         env,
-        learning_rate=0.0005,  # Lower LR for stability
-        buffer_size=50000,      # Smaller buffer to focus on recent experience
-        learning_starts=5000,   # More exploration before learning
-        batch_size=64,          # Smaller batch for stability
-        tau=0.005,              # Target network update rate
-        gamma=0.99,             # Discount factor
+        learning_rate=0.001,      # Standard learning rate
+        buffer_size=50000,        # Smaller buffer to focus on recent experience
+        learning_starts=10000,    # Let agent explore more before learning
+        batch_size=64,            # Smaller batch for stability
+        tau=0.005,                # Target network update rate
+        gamma=0.99,               # Discount factor
         train_freq=(1, "episode"),
-        gradient_steps=-1,      # Train after each episode
+        gradient_steps=-1,        # Train after each episode
         action_noise=None,
         policy_kwargs=dict(net_arch=[256, 256]),  # Smaller network
         verbose=1,

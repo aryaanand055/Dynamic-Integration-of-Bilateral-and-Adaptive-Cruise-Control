@@ -22,8 +22,9 @@ class TrafficControlEnv(gym.Env):
         self.collision_count = 0
         self.curriculum_step = curriculum_step
         
-        # Action Space: 5 continuous weights - constrained to [0.1, 1.5] for safety
-        self.action_space = spaces.Box(low=0.1, high=1.5, shape=(5,), dtype=np.float32)
+        # Action Space: 5 continuous weights - relaxed bounds for better exploration
+        # Range [0.01, 3.0] allows agent to discover good balance
+        self.action_space = spaces.Box(low=0.01, high=3.0, shape=(5,), dtype=np.float32)
 
         # Observation Space: [avg_vel_error, vel_std, avg_acc, spare]
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32)
@@ -145,48 +146,51 @@ class TrafficControlEnv(gym.Env):
         return np.array([avg_vel_error, vel_std, avg_acc, 0.0], dtype=np.float32)
 
     def _calculate_reward(self):
-        # Improved Reward Function:
-        # Encourages: velocity tracking, smoothness, stability, gap maintenance
-        # Penalizes: collisions (heavily), instability
+        # Improved Reward Function with gradual learning
+        # Key changes: Reduced weight on velocity, gradual gap penalties, lower collision penalty
         
         cars = self.city.cars
         if not cars:
             return -100.0
         
-        # 1. Velocity tracking (primary objective)
+        # 1. Velocity tracking - REDUCED weight to allow exploration
         vel_errors = [abs(c.velocity - self.sim_params['v_des']) for c in cars]
         avg_vel_error = np.mean(vel_errors)
-        vel_reward = -2.0 * avg_vel_error  # Higher weight
+        vel_reward = -0.5 * avg_vel_error
         
         # 2. Smoothness (acceleration should be minimal)
         avg_acc = np.mean([abs(c.acceleration) for c in cars])
-        smoothness_reward = -0.2 * avg_acc
+        smoothness_reward = -0.05 * avg_acc
         
         # 3. Stability (velocity deviation across fleet)
         vel_std = np.std([c.velocity for c in cars])
-        stability_reward = -0.1 * vel_std
+        stability_reward = -0.02 * vel_std
         
-        # 4. Gap safety (encourage maintaining min distances)
+        # 4. Gap safety - GRADUAL penalties to allow learning
         min_gap = self._get_min_gap()
-        if min_gap < 1.0:
-            gap_penalty = -5.0 * (1.0 - min_gap)
-        elif min_gap < 2.0:
-            gap_penalty = -2.0
-        else:
-            gap_penalty = 0.0
         
-        # 5. Collision detection - catastrophic
-        if self._check_collision():
-            return -10000.0
+        # Collision (hard wall)
+        if min_gap < 0.5:
+            return -5000.0  # Reduced from -10000 for better learning
+        
+        # Near-collision penalty (0.5-1.0m)
+        if min_gap < 1.0:
+            gap_penalty = -100.0 * (1.0 - min_gap)
+        # Warning zone (1.0-2.0m)
+        elif min_gap < 2.0:
+            gap_penalty = -10.0 * (2.0 - min_gap)
+        # Safe zone (>2.0m) - small reward
+        else:
+            gap_penalty = 0.1 * min(min_gap - 2.0, 5.0)
         
         # Total reward
         reward = vel_reward + smoothness_reward + stability_reward + gap_penalty
         
-        # Success bonus at episode end
+        # Bonus for completing episode
         if self.current_step == self.max_steps - 1:
-            reward += 100.0
+            reward += 50.0
         
-        return reward
+        return float(reward)
 
     def _get_min_gap(self):
         """Get minimum gap among all consecutive cars."""
