@@ -260,21 +260,29 @@ class City:
                 car.mode = 'RL-W'
                 road_length = car.current_road.length
                 
-                # Retrieve neighbors (handling wrap-around distance)
-                # Front Car
+                # GAP CALCULATION - CORRECTED
+                # Convention: lower position = ahead (since pos -= displacement for forward motion)
+                # Gap = distance from FRONT of following car to BACK of leading car
+                # Back of car = car.pos + car.length (length extends in increasing pos direction)
+                
+                # Front Car (car ahead of current car - has LOWER position)
                 if front_car:
-                    front_gap = (front_car.pos - car.pos - car.length) % road_length
+                    # Gap from current car to front car
+                    # = current_car.pos - (front_car.pos + front_car.length)
+                    front_gap = (car.pos - front_car.pos - front_car.length) % road_length
                     front_vel = front_car.velocity
                 else:
-                    front_gap = 1000.0 # Large gap if no car
-                    front_vel = car.velocity # No relative velocity
+                    front_gap = 100.0  # Default safe gap if no car ahead
+                    front_vel = car.velocity
                 
-                # Back Car    
+                # Back Car (car behind current car - has HIGHER position)
                 if back_car:
-                    back_gap = (car.pos - back_car.pos - back_car.length) % road_length
+                    # Gap from back car to current car
+                    # = back_car.pos - (car.pos + car.length)
+                    back_gap = (back_car.pos - car.pos - car.length) % road_length
                     back_vel = back_car.velocity
                 else:
-                    back_gap = 1000.0 
+                    back_gap = 100.0
                     back_vel = car.velocity
 
                 # Current State
@@ -285,20 +293,22 @@ class City:
                 # Weights from RL Agent
                 w1, w2, w3, w4, w5 = car.weights
                 
-                # 5-Term Control Logic
-                # 1. Front Gap Error (Maintain distance to front)
+                # 5-Term Control Logic (with correct signs for stability)
+                # Term 1: Front gap error - if front_gap > desired, positive acc (speed up)
+                #         if front_gap < desired, negative acc (slow down)
                 term1 = w1 * (front_gap - desired_gap)
                 
-                # 2. Back Gap Error (Maintain distance to back)
+                # Term 2: Back gap error - if back_gap < desired (car behind too close), 
+                #         positive acc (speed up to create space)
                 term2 = w2 * (desired_gap - back_gap)
                 
-                # 3. Front Velocity Match
+                # Term 3: Front velocity matching - match speed of car ahead
                 term3 = w3 * (front_vel - ego_vel)
                 
-                # 4. Back Velocity Match
+                # Term 4: Back velocity matching - consider car behind's speed
                 term4 = w4 * (back_vel - ego_vel)
                 
-                # 5. Target Velocity Match
+                # Term 5: Target velocity tracking
                 term5 = w5 * (target_vel - ego_vel)
 
                 acc = term1 + term2 + term3 + term4 + term5
