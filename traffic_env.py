@@ -42,10 +42,11 @@ class TrafficControlEnv(gym.Env):
             dtype=np.float32
         )
         
-        # Observation Space: Normalized fleet statistics
-        # [min_gap_norm, avg_gap_norm, avg_vel_norm, vel_std_norm, avg_acc_norm, min_gap_rate]
+        # Observation Space: Normalized fleet statistics + string stability info
+        # [min_gap_norm, avg_gap_norm, avg_vel_norm, vel_std_norm, avg_acc_norm, gap_rate, 
+        #  min_front_gap_norm, min_rear_gap_norm, acc_amplification]
         self.observation_space = spaces.Box(
-            low=-10.0, high=10.0, shape=(6,), dtype=np.float32
+            low=-10.0, high=10.0, shape=(9,), dtype=np.float32
         )
         
         # For reward normalization
@@ -124,29 +125,43 @@ class TrafficControlEnv(gym.Env):
 
     def _get_obs(self):
         """
-        Compute normalized observation vector.
-        Returns: [min_gap_norm, avg_gap_norm, avg_vel_norm, vel_std_norm, avg_acc_norm, gap_rate]
+        Compute normalized observation vector with string stability info.
+        Returns: [min_gap_norm, avg_gap_norm, avg_vel_norm, vel_std_norm, avg_acc_norm, gap_rate,
+                  min_front_gap_norm, min_rear_gap_norm, acc_amplification]
         """
         cars = self.city.cars
         if len(cars) < 2:
-            return np.zeros(6, dtype=np.float32)
+            return np.zeros(9, dtype=np.float32)
         
         # Compute gaps using CORRECT formula
         gaps = self._compute_all_gaps()
+        front_gaps, rear_gaps = self._compute_front_rear_gaps()
+        
         if not gaps:
-            return np.zeros(6, dtype=np.float32)
+            return np.zeros(9, dtype=np.float32)
         
         min_gap = min(gaps)
         avg_gap = np.mean(gaps)
         desired_gap = self.min_dis + self.v_des * self.reaction_time  # ~27.5m
+        
+        # Front/rear gap info for BCC awareness
+        min_front_gap = min(front_gaps) if front_gaps else desired_gap
+        min_rear_gap = min(rear_gaps) if rear_gaps else desired_gap
         
         # Velocities
         velocities = [c.velocity for c in cars]
         avg_vel = np.mean(velocities)
         vel_std = np.std(velocities)
         
-        # Accelerations
-        avg_acc = np.mean([c.acceleration for c in cars])
+        # Accelerations and string stability metric
+        accelerations = [c.acceleration for c in cars]
+        avg_acc = np.mean(accelerations)
+        
+        # Acceleration amplification ratio (string stability indicator)
+        # How much acceleration grows from front to back
+        acc_amplification = 0.0
+        if len(accelerations) >= 2 and abs(accelerations[0]) > 0.1:
+            acc_amplification = abs(accelerations[-1]) / abs(accelerations[0]) - 1.0
         
         # Gap rate of change
         if self.prev_min_gap is not None:
@@ -156,15 +171,48 @@ class TrafficControlEnv(gym.Env):
         
         # Normalize observations to roughly [-1, 1] range
         obs = np.array([
-            (min_gap - desired_gap) / desired_gap,  # Normalized min gap error
-            (avg_gap - desired_gap) / desired_gap,  # Normalized avg gap error
-            (avg_vel - self.v_des) / self.v_des,    # Normalized velocity error
-            vel_std / self.v_des,                    # Normalized velocity std
-            avg_acc / 3.0,                           # Normalized acceleration
-            np.clip(gap_rate / 5.0, -1, 1)          # Normalized gap rate
+            (min_gap - desired_gap) / desired_gap,       # Normalized min gap error
+            (avg_gap - desired_gap) / desired_gap,       # Normalized avg gap error
+            (avg_vel - self.v_des) / self.v_des,         # Normalized velocity error
+            vel_std / self.v_des,                         # Normalized velocity std
+            avg_acc / 3.0,                                # Normalized acceleration
+            np.clip(gap_rate / 5.0, -1, 1),              # Normalized gap rate
+            (min_front_gap - desired_gap) / desired_gap, # Front gap awareness
+            (min_rear_gap - desired_gap) / desired_gap,  # Rear gap awareness (BCC)
+            np.clip(acc_amplification, -2, 2)            # String stability indicator
         ], dtype=np.float32)
         
         return np.clip(obs, -10.0, 10.0)
+    
+    def _compute_front_rear_gaps(self):
+        """Compute separate front and rear gaps for each follower car."""
+        if not self.city.roads:
+            return [], []
+        
+        road_len = self.city.roads[0].length
+        cars = self.city.cars
+        front_gaps = []
+        rear_gaps = []
+        
+        # Sort by position (lower pos = ahead)
+        sorted_cars = sorted(cars, key=lambda c: c.pos)
+        
+        for i in range(len(sorted_cars)):
+            car = sorted_cars[i]
+            car_ahead = sorted_cars[(i - 1) % len(sorted_cars)]
+            car_behind = sorted_cars[(i + 1) % len(sorted_cars)]
+            
+            # Front gap: distance to car ahead
+            front_gap = (car.pos - car_ahead.pos - car_ahead.length) % road_len
+            # Rear gap: distance to car behind  
+            rear_gap = (car_behind.pos - car.pos - car.length) % road_len
+            
+            if 0 < front_gap < road_len / 2:
+                front_gaps.append(front_gap)
+            if 0 < rear_gap < road_len / 2:
+                rear_gaps.append(rear_gap)
+        
+        return front_gaps, rear_gaps
 
     def _compute_all_gaps(self):
         """Compute gaps between all consecutive cars using CORRECT formula."""
@@ -237,10 +285,33 @@ class TrafficControlEnv(gym.Env):
         vel_std = np.std([c.velocity for c in cars])
         stability_reward = -0.05 * vel_std
         
-        # 5. Survival bonus (encourage longer episodes)
+        # 5. STRING STABILITY reward (key for BCC behavior)
+        # Disturbances should dampen through the platoon, not amplify
+        string_stability_reward = 0.0
+        accelerations = [c.acceleration for c in cars]
+        
+        # Check if accelerations amplify through the chain
+        # cars[0] is lead, cars[1:] are followers
+        amplification_count = 0
+        for i in range(1, len(accelerations)):
+            # If follower's |acceleration| > predecessor's |acceleration|, that's amplification
+            if abs(accelerations[i]) > abs(accelerations[i-1]) + 0.1:  # 0.1 tolerance
+                amplification_count += 1
+        
+        # Penalize amplification (bad for string stability)
+        string_stability_reward = -0.5 * amplification_count
+        
+        # Bonus for dampening: if last car has smaller |acc| than lead
+        if len(accelerations) >= 2:
+            lead_acc = abs(accelerations[0])
+            last_acc = abs(accelerations[-1])
+            if lead_acc > 0.1 and last_acc < lead_acc:
+                string_stability_reward += 0.5  # Reward for dampening
+        
+        # 6. Survival bonus (encourage longer episodes)
         survival_bonus = 0.1
         
-        total_reward = gap_reward + vel_reward + smooth_reward + stability_reward + survival_bonus
+        total_reward = gap_reward + vel_reward + smooth_reward + stability_reward + string_stability_reward + survival_bonus
         
         return float(np.clip(total_reward, -100.0, 10.0))
 
