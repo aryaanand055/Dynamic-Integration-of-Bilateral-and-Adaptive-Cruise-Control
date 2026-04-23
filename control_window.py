@@ -4,9 +4,8 @@ Control_window.py: Contains the ControlWindow class for managing the traffic sim
 
 
 import tkinter as tk
+from tkinter import ttk
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
 import csv
 from city import City
 from transportation_painter import TransportationPainter
@@ -15,36 +14,11 @@ class ControlWindow:
     def __init__(self, master):
         self.master = master
 
-        # Create a scrollable frame inside a canvas
-        self.canvas_wrapper = tk.Canvas(master)
-        self.scroll_y = tk.Scrollbar(master, orient="vertical", command=self.canvas_wrapper.yview)
-        self.scroll_y.pack(side="right", fill="y")
-        self.canvas_wrapper.pack(side="left", fill="both", expand=True)
+        self.master.configure(bg="#0f172a")
+        self.master.minsize(1080, 720)
+        self.master.title("ACC/BCC Engineering Dashboard")
 
-        # This frame will hold all your content
-        self.scrollable_frame = tk.Frame(self.canvas_wrapper)
-
-        # Connect canvas to the scrollable frame
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas_wrapper.configure(
-                scrollregion=self.canvas_wrapper.bbox("all")
-            )
-        )
-
-        # Embed the frame inside the canvas
-        self.canvas_wrapper.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.canvas_wrapper.configure(yscrollcommand=self.scroll_y.set)
-
-        # Create a panel/frame for parameter entries and buttons
-        self.panel = tk.Frame(self.scrollable_frame)
-        self.panel.pack()
-
-        # Dictionary to hold entry widgets for parameters
-        self.entries = {}
-
-        # Default values for simulation parameters
-        default_values = {
+        self.default_values = {
             "car_number": 15,
             "kd": 0.9,
             "kv": 0.5,
@@ -54,98 +28,343 @@ class ControlWindow:
             "min_v": 0.0,
             "min_dis": 6.0,
             "reaction_time": 0.8,
-            "headway_time": 1,
+            "headway_time": 1.0,
             "max_a": 3.0,
             "min_a": -5.0,
             "min_gap": 2.0,
-            "dt": 0.1 
+            "dt": 0.1,
         }
-        
-        params = [
-            ("car_number", "Number of Cars"),
-            ("kd", "Gap Control Gain (kd)"),
-            ("kv", "Relative Velocity Gain (kv)"),
-            ("kc", "Desired Velocity Gain (kc)"),
-            ("v_des", "Desired Velocity"),
-            ("max_v", "Max Velocity"),
-            ("min_v", "Min Velocity"),
-            ("min_dis", "Min Distance Between cars (buffer distance)"),
-            ("reaction_time", "Reaction Time"),
-            ("headway_time", "Headway Time"),
-            ("max_a", "Max Acceleration"),
-            ("min_a", "Min Acceleration"),
-            ("min_gap", "Minimum Gap Between Cars (for collision check)"),
-            ("dt", "Simulation Time Step (dt)")  
-        ]
+        self.entries = {}
 
-        # Create label and entry for each parameter
-        for i, (key, label) in enumerate(params):
-            tk.Label(self.panel, text=label).grid(row=i, column=0)
-            entry = tk.Entry(self.panel)
-            entry.grid(row=i, column=1)
-            entry.insert(0, str(default_values.get(key, "")))
-            self.entries[key] = entry
+        self._configure_style()
+        self._build_layout()
+        self._build_controls()
+        self._build_visualization_area()
 
-        # Buttons for running, stopping, and resuming simulations
-        self.run_button = tk.Button(self.panel, text="Run", command=self.run_simulation)
-        self.run_button.grid(row=len(params), column=0)
+        # Timer for simulation updates
+        self.timer = None
 
-        # Extra buttons for controlling LEAD and FOLLOWING separately
-        self.stop_lead_button = tk.Button(self.panel, text="Stop Lead", command=lambda: self.stop_lead())
-        self.stop_lead_button.grid(row=len(params), column=1)
+        # Flags to control leader/follower stop
+        self.leader_stop = False
+        self.follower_stop = False
 
-        self.resume_lead_button = tk.Button(self.panel, text="Resume Lead", command=lambda: self.resume_lead())
-        self.resume_lead_button.grid(row=len(params), column=2)
+        self.dt = self.default_values["dt"]
 
-        self.stop_following_button = tk.Button(self.panel, text="Stop Following", command=lambda: self.stop_follower())
-        self.stop_following_button.grid(row=len(params)+1, column=1)
+        self.master.bind("<Configure>", self._handle_resize)
+        self._handle_resize()
 
-        self.resume_following_button = tk.Button(self.panel, text="Resume Following", command=lambda: self.resume_follower())
-        self.resume_following_button.grid(row=len(params)+1, column=2)
+    def _configure_style(self):
+        style = ttk.Style(self.master)
+        style.theme_use("clam")
 
-        # Btn for acceleration
-        self.plot_acc_button = tk.Button(self.panel, text="Plot Vel and Acc Profiles", command=self.plot_vel_acc_profiles)
-        self.plot_acc_button.grid(row=len(params)+2, column=1)
-        
-        # Checkbox to enable velocity profile
-        self.use_velocity_profile = tk.BooleanVar(value=False)
-        self.velocity_profile_checkbox = tk.Checkbutton(self.panel, text="Enable Ego Velocity Profile", variable=self.use_velocity_profile)
-        self.velocity_profile_checkbox.grid(row=len(params)+3, column=1, columnspan=2, sticky="w")
+        style.configure("Root.TFrame", background="#0f172a")
+        style.configure("Pane.TFrame", background="#0f172a")
+        style.configure("Card.TFrame", background="#111827")
 
-        # Create a City instance for ACC 
+        style.configure("Title.TLabel", background="#0f172a", foreground="#f8fafc", font=("Segoe UI", 24, "bold"))
+        style.configure("SubTitle.TLabel", background="#0f172a", foreground="#94a3b8", font=("Segoe UI", 10))
+        style.configure("Section.TLabel", background="#111827", foreground="#e2e8f0", font=("Segoe UI", 10, "bold"))
+        style.configure("Meta.TLabel", background="#111827", foreground="#94a3b8", font=("Segoe UI", 9))
+        style.configure("FieldLabel.TLabel", background="#111827", foreground="#cbd5e1", font=("Segoe UI", 9))
+
+        style.configure("TEntry", fieldbackground="#0b1220", foreground="#e2e8f0", insertcolor="#e2e8f0", borderwidth=0, padding=5)
+        style.map("TEntry", fieldbackground=[("focus", "#132035")])
+
+        style.configure("TButton", background="#1e293b", foreground="#e2e8f0", borderwidth=0, padding=8)
+        style.map("TButton", background=[("active", "#2b3b4e")])
+
+        style.configure("Primary.TButton", background="#486581", foreground="#e2e8f0", borderwidth=0, padding=9)
+        style.map("Primary.TButton", background=[("active", "#5e7a96")])
+
+        style.configure("TCheckbutton", background="#111827", foreground="#cbd5e1")
+
+    def _build_layout(self):
+        self.root = ttk.Frame(self.master, style="Root.TFrame", padding=(24, 20, 24, 20))
+        self.root.pack(fill="both", expand=True)
+
+        self.header = ttk.Frame(self.root, style="Root.TFrame")
+        self.header.pack(fill="x", pady=(0, 14))
+        ttk.Label(self.header, text="ACC/BCC Vehicle Simulation", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            self.header,
+            text="Engineering dashboard for adaptive and bilateral cruise control",
+            style="SubTitle.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
+        self.body = ttk.Frame(self.root, style="Pane.TFrame")
+        self.body.pack(fill="both", expand=True)
+        self.body.columnconfigure(0, weight=22)
+        self.body.columnconfigure(1, weight=78)
+        self.body.rowconfigure(0, weight=1)
+
+        # Left side has its own scroll to keep controls usable on smaller displays.
+        self.left_wrapper = ttk.Frame(self.body, style="Pane.TFrame")
+        self.left_wrapper.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        self.left_wrapper.rowconfigure(0, weight=1)
+        self.left_wrapper.columnconfigure(0, weight=1)
+
+        self.left_canvas = tk.Canvas(self.left_wrapper, bg="#0f172a", highlightthickness=0)
+        self.left_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.left_scroll = ttk.Scrollbar(self.left_wrapper, orient="vertical", command=self.left_canvas.yview)
+        self.left_scroll.grid(row=0, column=1, sticky="ns")
+        self.left_canvas.configure(yscrollcommand=self.left_scroll.set)
+
+        self.controls_container = tk.Frame(self.left_canvas, bg="#0f172a")
+        self.controls_window = self.left_canvas.create_window((0, 0), window=self.controls_container, anchor="nw")
+
+        self.controls_container.bind("<Configure>", lambda _e: self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all")))
+        self.left_canvas.bind("<Configure>", self._resize_left_canvas)
+
+        self.right_wrapper = ttk.Frame(self.body, style="Pane.TFrame")
+        self.right_wrapper.grid(row=0, column=1, sticky="nsew")
+        self.right_wrapper.rowconfigure(0, weight=1)
+        self.right_wrapper.columnconfigure(0, weight=1)
+
+        self.right_canvas = tk.Canvas(self.right_wrapper, bg="#0f172a", highlightthickness=0)
+        self.right_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.right_scroll = ttk.Scrollbar(self.right_wrapper, orient="vertical", command=self.right_canvas.yview)
+        self.right_scroll.grid(row=0, column=1, sticky="ns")
+        self.right_canvas.configure(yscrollcommand=self.right_scroll.set)
+
+        self.right_content = tk.Frame(self.right_canvas, bg="#0f172a")
+        self.right_window = self.right_canvas.create_window((0, 0), window=self.right_content, anchor="nw")
+
+        self.right_content.bind("<Configure>", lambda _e: self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all")))
+        self.right_canvas.bind("<Configure>", self._resize_right_canvas)
+
+        # Use wheel/trackpad scrolling in both columns.
+        self.master.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _build_controls(self):
+        # Create a City instance for ACC/BCC/ACC+BCC
         self.city_acc = City()
         self.city_bcc = City()
         self.city_accbcc = City()
 
-        # Visualization for ACC (top)
-        self.painter_acc = TransportationPainter(self.scrollable_frame, self.city_acc.roads, self.city_acc.cars, width=1500, height=125, bg='white')
-        self.painter_acc.pack()
-        tk.Label(self.scrollable_frame, text="ACC").pack()
-        self.energy_label_acc = tk.Label(self.scrollable_frame, text="Total Energy : 0 KwH", font=("Arial", 10, "bold"))
-        self.energy_label_acc.pack()
+        self.control_cards = []
+        self._create_control_group(
+            title="Simulation Setup",
+            fields=[
+                ("car_number", "Number of Cars"),
+                ("dt", "Simulation Time Step (s)"),
+            ],
+        )
+        self._create_control_group(
+            title="Control Gains",
+            fields=[
+                ("kd", "Gap Control Gain (kd)"),
+                ("kv", "Relative Velocity Gain (kv)"),
+                ("kc", "Desired Velocity Gain (kc)"),
+            ],
+        )
+        self._create_control_group(
+            title="Constraints",
+            fields=[
+                ("v_des", "Desired Velocity"),
+                ("max_v", "Max Velocity"),
+                ("min_v", "Min Velocity"),
+                ("max_a", "Max Acceleration"),
+                ("min_a", "Min Acceleration"),
+            ],
+        )
+        self._create_control_group(
+            title="Safety",
+            fields=[
+                ("min_dis", "Buffer Distance"),
+                ("reaction_time", "Reaction Time"),
+                ("headway_time", "Headway Time"),
+                ("min_gap", "Collision Check Gap"),
+            ],
+        )
 
-        # # Visualization for BCC (bottom)
-        self.painter_bcc = TransportationPainter(self.scrollable_frame, self.city_bcc.roads, self.city_bcc.cars, width=1500, height=125, bg='white')
-        self.painter_bcc.pack()
-        tk.Label(self.scrollable_frame, text="BCC").pack()
-        self.energy_label_bcc = tk.Label(self.scrollable_frame, text="Total Energy : 0 KwH", font=("Arial", 10, "bold"))
-        self.energy_label_bcc.pack()
+        action_card = tk.Frame(self.controls_container, bg="#111827", padx=10, pady=10)
+        action_card.pack(fill="x", pady=(0, 12))
 
-        # Visualization for ACC and BCC velocity profiles
-        self.painter_accbcc = TransportationPainter(self.scrollable_frame, self.city_accbcc.roads, self.city_accbcc.cars, width=1500, height=125, bg='white')
-        self.painter_accbcc.pack()
-        tk.Label(self.scrollable_frame, text="ACC and BCC Combined").pack()
-        self.energy_label_accbcc = tk.Label(self.scrollable_frame, text="Total Energy : 0 KwH", font=("Arial", 10, "bold"))
-        self.energy_label_accbcc.pack()
-        
-        # Timer for simulation updates
-        self.timer = None
+        ttk.Label(action_card, text="Simulation Actions", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(action_card, text="Run, stop, and inspect behavior", style="Meta.TLabel").pack(anchor="w", pady=(0, 10))
 
-        # Flags to control leader stop for ACC and BCC
-        self.leader_stop = False
-        self.follower_stop = False
+        self.run_button = ttk.Button(action_card, text="Run Simulation", command=self.run_simulation, style="Primary.TButton")
+        self.run_button.pack(fill="x", pady=(0, 8))
 
-        self.dt = default_values["dt"] 
+        controls_row_1 = ttk.Frame(action_card, style="Card.TFrame")
+        controls_row_1.pack(fill="x", pady=(0, 6))
+        controls_row_1.columnconfigure((0, 1), weight=1)
+        self.stop_lead_button = ttk.Button(controls_row_1, text="Stop Lead", command=self.stop_lead)
+        self.stop_lead_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.resume_lead_button = ttk.Button(controls_row_1, text="Resume Lead", command=self.resume_lead)
+        self.resume_lead_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+
+        controls_row_2 = ttk.Frame(action_card, style="Card.TFrame")
+        controls_row_2.pack(fill="x", pady=(0, 6))
+        controls_row_2.columnconfigure((0, 1), weight=1)
+        self.stop_following_button = ttk.Button(controls_row_2, text="Stop Following", command=self.stop_follower)
+        self.stop_following_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.resume_following_button = ttk.Button(controls_row_2, text="Resume Following", command=self.resume_follower)
+        self.resume_following_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+
+        self.plot_acc_button = ttk.Button(action_card, text="Plot Vel and Acc Profiles", command=self.plot_vel_acc_profiles)
+        self.plot_acc_button.pack(fill="x", pady=(0, 8))
+
+        self.use_velocity_profile = tk.BooleanVar(value=False)
+        self.velocity_profile_checkbox = ttk.Checkbutton(
+            action_card,
+            text="Enable Ego Velocity Profile",
+            variable=self.use_velocity_profile,
+        )
+        self.velocity_profile_checkbox.pack(anchor="w")
+
+    def _create_control_group(self, title, fields):
+        card = tk.Frame(self.controls_container, bg="#111827", padx=10, pady=10)
+        card.pack(fill="x", pady=(0, 8))
+        self.control_cards.append(card)
+
+        ttk.Label(card, text=title, style="Section.TLabel").pack(anchor="w")
+        ttk.Label(card, text="Tune parameters", style="Meta.TLabel").pack(anchor="w", pady=(0, 6))
+
+        grid = ttk.Frame(card, style="Card.TFrame")
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+
+        for idx, (key, label) in enumerate(fields):
+            row = idx // 2
+            col = idx % 2
+            self._create_field(grid, key, label, row, col)
+
+    def _create_field(self, parent, key, label, row, col):
+        field = ttk.Frame(parent, style="Card.TFrame")
+        field.grid(row=row, column=col, sticky="ew", padx=(0, 6) if col == 0 else (6, 0), pady=(0, 6))
+        field.columnconfigure(0, weight=1)
+
+        ttk.Label(field, text=label, style="FieldLabel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 3))
+
+        entry = ttk.Entry(field, font=("Consolas", 10), width=12)
+        entry.grid(row=1, column=0, sticky="w")
+        entry.insert(0, str(self.default_values[key]))
+        self.entries[key] = entry
+
+    def _build_visualization_area(self):
+        self.right_content.columnconfigure(0, weight=1)
+
+        # Integrated utility bar: metrics are docked near simulation content, not floating as separate cards.
+        self.metrics_strip = tk.Frame(self.right_content, bg="#111827", padx=12, pady=8)
+        self.metrics_strip.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.metrics_strip.columnconfigure(0, weight=3)
+        self.metrics_strip.columnconfigure(1, weight=2)
+        self.metrics_strip.columnconfigure(2, weight=2)
+
+        self.metric_value_total = self._inline_metric(self.metrics_strip, 0, "Energy", "0.0000 kWh")
+        self.metric_value_vel = self._inline_metric(self.metrics_strip, 1, "Avg Velocity", "0.00 m/s")
+        self.metric_value_stability = self._inline_metric(self.metrics_strip, 2, "Stability", "0.0")
+
+        self.visualizations_wrap = ttk.Frame(self.right_content, style="Pane.TFrame")
+        self.visualizations_wrap.grid(row=1, column=0, sticky="nsew")
+
+        # Simulation panels are stacked so each model gets full horizontal width.
+        self.painter_acc, self.energy_label_acc, self.meta_acc = self._build_visualization_card("ACC", self.city_acc, height=200)
+        self.painter_bcc, self.energy_label_bcc, self.meta_bcc = self._build_visualization_card("BCC", self.city_bcc, height=155)
+        self.painter_accbcc, self.energy_label_accbcc, self.meta_accbcc = self._build_visualization_card("Combined", self.city_accbcc, height=155)
+
+        self.painters = [self.painter_acc, self.painter_bcc, self.painter_accbcc]
+
+    def _inline_metric(self, parent, col, title, value_text):
+        holder = tk.Frame(parent, bg="#111827")
+        holder.grid(row=0, column=col, sticky="ew", padx=(0, 10) if col < 2 else (0, 0))
+        tk.Label(holder, text=title, fg="#94a3b8", bg="#111827", font=("Segoe UI", 8)).pack(anchor="w")
+        value_label = tk.Label(holder, text=value_text, fg="#e2e8f0", bg="#111827", font=("Consolas", 12, "bold"))
+        value_label.pack(anchor="w")
+        return value_label
+
+    def _build_visualization_card(self, title, city_obj, parent=None, height=150):
+        card_parent = parent if parent is not None else self.visualizations_wrap
+        card = tk.Frame(card_parent, bg="#111827", padx=10, pady=9)
+        card.pack(fill="x", pady=(0, 12))
+
+        title_label = tk.Label(card, text=title, fg="#f8fafc", bg="#111827", font=("Segoe UI", 11, "bold"))
+        title_label.pack(anchor="w")
+
+        metadata_label = tk.Label(card, text="Cars 00 | Avg v 0.00 m/s", fg="#94a3b8", bg="#111827", font=("Consolas", 9))
+        metadata_label.pack(anchor="w", pady=(1, 6))
+
+        painter = TransportationPainter(
+            card,
+            city_obj.roads,
+            city_obj.cars,
+            width=950,
+            height=height,
+            bg="#0b1220",
+            highlightthickness=0,
+        )
+        painter.pack(fill="x", expand=True)
+
+        energy_label = tk.Label(
+            card,
+            text="Energy 0.0000 kWh",
+            fg="#94a3b8",
+            bg="#111827",
+            font=("Consolas", 9),
+        )
+        energy_label.pack(anchor="w", pady=(6, 0))
+
+        return painter, energy_label, metadata_label
+
+    def _resize_left_canvas(self, event):
+        self.left_canvas.itemconfigure(self.controls_window, width=event.width)
+
+    def _resize_right_canvas(self, event):
+        self.right_canvas.itemconfigure(self.right_window, width=event.width)
+
+    def _is_descendant_of(self, widget, ancestor):
+        while widget is not None:
+            if widget == ancestor:
+                return True
+            widget = widget.master
+        return False
+
+    def _on_mousewheel(self, event):
+        hovered_widget = self.master.winfo_containing(event.x_root, event.y_root)
+        if hovered_widget is None:
+            return
+
+        scroll_amount = int(-1 * (event.delta / 120))
+        if self._is_descendant_of(hovered_widget, self.left_canvas):
+            self.left_canvas.yview_scroll(scroll_amount, "units")
+        elif self._is_descendant_of(hovered_widget, self.right_canvas):
+            self.right_canvas.yview_scroll(scroll_amount, "units")
+
+    def _handle_resize(self, _event=None):
+        width = self.master.winfo_width()
+
+        # Keep a true 30/70 split on medium+ screens and stack gracefully on narrow screens.
+        if width < 1100:
+            self.body.columnconfigure(0, weight=1)
+            self.body.columnconfigure(1, weight=1)
+            self.left_wrapper.grid_configure(row=0, column=0, padx=(0, 0), pady=(0, 12))
+            self.right_wrapper.grid_configure(row=1, column=0)
+            target_width = max(640, width - 80)
+        else:
+            self.body.columnconfigure(0, weight=22)
+            self.body.columnconfigure(1, weight=78)
+            self.left_wrapper.grid_configure(row=0, column=0, padx=(0, 12), pady=(0, 0))
+            self.right_wrapper.grid_configure(row=0, column=1)
+            target_width = max(760, int(width * 0.69))
+
+        # All simulation panels use full visualization width.
+        full_width = target_width
+
+        if hasattr(self, "painter_acc"):
+            self.painter_acc.config(width=full_width)
+            self.painter_acc.repaint()
+
+        if hasattr(self, "painter_bcc"):
+            self.painter_bcc.config(width=full_width)
+            self.painter_bcc.repaint()
+
+        if hasattr(self, "painter_accbcc"):
+            self.painter_accbcc.config(width=full_width)
+            self.painter_accbcc.repaint()
     
     def load_velocity_profile(self, filename="data.csv"):
         self.ego_velocity_profile = []
@@ -350,10 +569,28 @@ class ControlWindow:
         total_energy_bcc = sum(car.energy_used for car in self.city_bcc.cars)
         total_energy_accbcc = sum(car.energy_used for car in self.city_accbcc.cars)
         
-        # Update label texts
-        self.energy_label_acc.config(text=f"Total Energy : {total_energy_acc:.4f} KwH")
-        self.energy_label_bcc.config(text=f"Total Energy : {total_energy_bcc:.4f} KwH")
-        self.energy_label_accbcc.config(text=f"Total Energy : {total_energy_accbcc:.4f} KwH")
+        # Update panel texts and metrics
+        self.energy_label_acc.config(text=f"Energy {total_energy_acc:.4f} kWh")
+        self.energy_label_bcc.config(text=f"Energy {total_energy_bcc:.4f} kWh")
+        self.energy_label_accbcc.config(text=f"Energy {total_energy_accbcc:.4f} kWh")
+
+        avg_v_acc = sum(car.velocity for car in self.city_acc.cars) / len(self.city_acc.cars) if self.city_acc.cars else 0.0
+        avg_v_bcc = sum(car.velocity for car in self.city_bcc.cars) / len(self.city_bcc.cars) if self.city_bcc.cars else 0.0
+        avg_v_accbcc = sum(car.velocity for car in self.city_accbcc.cars) / len(self.city_accbcc.cars) if self.city_accbcc.cars else 0.0
+
+        self.meta_acc.config(text=f"Cars {len(self.city_acc.cars):02d} | Avg v {avg_v_acc:05.2f} m/s")
+        self.meta_bcc.config(text=f"Cars {len(self.city_bcc.cars):02d} | Avg v {avg_v_bcc:05.2f} m/s")
+        self.meta_accbcc.config(text=f"Cars {len(self.city_accbcc.cars):02d} | Avg v {avg_v_accbcc:05.2f} m/s")
+
+        total_energy_all = total_energy_acc + total_energy_bcc + total_energy_accbcc
+        all_cars = self.city_acc.cars + self.city_bcc.cars + self.city_accbcc.cars
+        avg_velocity_all = sum(car.velocity for car in all_cars) / len(all_cars) if all_cars else 0.0
+        avg_abs_acc = sum(abs(car.acceleration) for car in all_cars) / len(all_cars) if all_cars else 0.0
+        stability_score = max(0.0, min(100.0, 100.0 - (avg_abs_acc * 12.0)))
+
+        self.metric_value_total.config(text=f"{total_energy_all:08.4f} kWh")
+        self.metric_value_vel.config(text=f"{avg_velocity_all:05.2f} m/s")
+        self.metric_value_stability.config(text=f"{stability_score:05.1f}")
 
         # Schedule next update for 0.1 seconds later (100 ms)
         self.timer = self.master.after(int(dt*1000), self.update_simulation)

@@ -34,14 +34,26 @@ class TransportationPainter(tk.Canvas):
 
     # Render roads and cars on canvas
     def paint(self):
-        # Draw horizontal road lines (positioned nearer the top)
+        # Draw road with subtle lane treatment for a cleaner dashboard look.
         canvas_width = int(self["width"])
-        road_left = 50
-        road_right = canvas_width - 50
-        road_y = max(60, int(self["height"]) // 3)  # pull road closer to top
+        canvas_height = int(self["height"])
+        margin = max(30, int(canvas_width * 0.04))
+        road_left = margin
+        road_right = canvas_width - margin
+        road_y = max(60, canvas_height // 2)
 
-        for road in self.roads:
-            self.create_line(road_left, road_y, road_right, road_y, width=8, fill='gray')
+        # Road body and shoulders.
+        self.create_rectangle(road_left, road_y - 18, road_right, road_y + 18, fill="#1e293b", outline="")
+        self.create_line(road_left, road_y - 18, road_right, road_y - 18, width=1, fill="#334155")
+        self.create_line(road_left, road_y + 18, road_right, road_y + 18, width=1, fill="#334155")
+
+        dash_count = 14
+        segment = max(20, (road_right - road_left) // (dash_count * 2))
+        gap = segment
+        for i in range(dash_count):
+            x1 = road_left + i * (segment + gap)
+            x2 = min(x1 + segment, road_right)
+            self.create_line(x1, road_y, x2, road_y, width=2, fill="#64748b")
             
         # Draw cars sorted by position
         if self.cars:
@@ -54,12 +66,17 @@ class TransportationPainter(tk.Canvas):
                 x = road_right - (car.pos / road_length) * (road_right - road_left)
                 y = road_y
                 # Draw car rectangle
-                self.create_rectangle(x-car.length/2, y-10, x+car.length/2, y+10, fill=car.color, outline='black')
-                # Display velocity above car
-                self.create_text(x, y-25, text=f"{car.velocity:.1f}")
+                self.create_rectangle(
+                    x-car.length/2,
+                    y-9,
+                    x+car.length/2,
+                    y+9,
+                    fill=car.color,
+                    outline='',
+                    width=0
+                )
                 # Determine mode label (A=ACC, B=BCC, S=SWITCH)
                 mode_label = 'A' if getattr(car, 'mode', 'ACC') == 'ACC' else 'B' if getattr(car, 'mode', 'BCC') == 'BCC' else f"{car.integration_factor:.2f}".split(".")[1] if getattr(car, 'mode', 'INTEGRATED') == 'INTEGRATED' else "S" if getattr(car, 'mode', "SWITCH") == "SWITCH" else 'V'
-                # Display mode label below car
-                self.create_text(x, y + 20, text=mode_label, font=("Arial", 8))
-
+                # Minimal mode badge just below each vehicle.
+                self.create_text(x, y + 20, text=mode_label, font=("Consolas", 7), fill="#94a3b8")
    
