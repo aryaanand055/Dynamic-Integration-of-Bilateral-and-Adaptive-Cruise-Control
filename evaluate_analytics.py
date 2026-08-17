@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from stable_baselines3 import TD3
 
-from accel_traffic_env import AccelTrafficEnv
+from env.accel_traffic_env import AccelTrafficEnv
 
 def evaluate():
     env = AccelTrafficEnv()
@@ -19,6 +19,21 @@ def evaluate():
     # Run evaluation
     obs = env.reset()
     
+    # Override with GUI defaults for this evaluation
+    gui_params = {
+        'car_number': 15, 'kd': 0.9, 'kv': 0.5, 'kc': 0.4,
+        'v_des': 15.0, 'max_v': 30.0, 'min_v': 0.0,
+        'min_dis': 6.0, 'reaction_time': 0.8, 'max_a': 3.0, 'min_a': -5.0
+    }
+    env.sim_params.update(gui_params)
+    
+    # Re-initialize city with GUI defaults
+    init_args = [env.num_cars, env.sim_params['kd'], env.sim_params['kv'], env.sim_params['kc'],
+                 env.sim_params['v_des'], env.sim_params['max_v'], env.sim_params['min_v'],
+                 env.sim_params['min_dis'], env.sim_params['reaction_time'], 1.0,  # headway
+                 env.sim_params['max_a'], env.sim_params['min_a'], 2.0]  # min_gap
+    env.city.init(*init_args, dt=env.dt, model='ACC')
+    
     steps = 500
     
     speeds = []
@@ -28,7 +43,7 @@ def evaluate():
     rewards = []
     
     dt = env.dt
-    prev_accel = np.zeros(env.sim_params['num_cars'])
+    prev_accel = np.zeros(env.num_cars)
     
     for _ in range(steps):
         # Predict actions for all 15 cars using parameter sharing
@@ -63,7 +78,7 @@ def evaluate():
                 return g if g > 0 else float('inf')
             front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
             
-            gap = (car.pos - front_car.pos - car.length) % road_len if front_car else road_len
+            gap = (car.pos - front_car.pos - front_car.length) % road_len if front_car else road_len
             current_gaps.append(gap)
             
         speeds.append(current_speeds)

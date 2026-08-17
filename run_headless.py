@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 import csv
 import numpy as np
 import pandas as pd
-from city import City
-from rl_city import RLCity
+from simulation.city import City
+from simulation.rl_city import RLCity
 from stable_baselines3 import TD3
 
 def load_velocity_profiles(city_acc, city_bcc, city_accbcc, city_rl):
@@ -12,7 +12,7 @@ def load_velocity_profiles(city_acc, city_bcc, city_accbcc, city_rl):
     ego_velocity_profile = []
     ego_velocity_profile_1 = []
     try:
-        with open("data.csv", 'r') as f:
+        with open("data/data.csv", 'r') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 time = float(row['time'])
@@ -157,13 +157,13 @@ def get_gap_statistics(gaps):
     df.index.name = "Statistic"
     print(df.to_string(float_format="%.4f"))
 
-def _get_rl_observation(city):
+def _get_rl_observation(city, v_des=25.0):
     """
     Build normalized observations for FOLLOWER cars only (indices 1..N-1).
     Must exactly match AccelTrafficEnv._get_obs() normalization.
     """
-    OBS_MEANS = np.array([20.0, 0.0, 30.0, 0.0, 30.0, 0.0], dtype=np.float32)
-    OBS_STDS  = np.array([15.0, 3.0, 30.0, 10.0, 30.0, 10.0], dtype=np.float32)
+    OBS_MEANS = np.array([20.0, 0.0, 30.0, 0.0, 30.0, 0.0, 25.0], dtype=np.float32)
+    OBS_STDS  = np.array([15.0, 3.0, 30.0, 10.0, 30.0, 10.0, 10.0], dtype=np.float32)
     
     cars = city.cars
     road_length = city.roads[0].length if city.roads else 1000
@@ -188,7 +188,7 @@ def _get_rl_observation(city):
         ego_accel = car.acceleration
         
         if front_car:
-            front_gap = (car.pos - front_car.pos - car.length) % road_length
+            front_gap = (car.pos - front_car.pos - front_car.length) % road_length
             front_rel_vel = front_car.velocity - ego_vel
         else:
             front_gap = road_length
@@ -201,7 +201,7 @@ def _get_rl_observation(city):
             back_gap = road_length
             back_rel_vel = 0.0
         
-        raw = np.array([ego_vel, ego_accel, front_gap, front_rel_vel, back_gap, back_rel_vel], dtype=np.float32)
+        raw = np.array([ego_vel, ego_accel, front_gap, front_rel_vel, back_gap, back_rel_vel, v_des], dtype=np.float32)
         normalized = (raw - OBS_MEANS) / (OBS_STDS + 1e-8)
         obs_array.append(normalized)
         
@@ -214,20 +214,21 @@ def main():
     USE_VELOCITY_PROFILES = True
     
     # --- Simulation Parameters ---
+    # Parameters aligned with training distribution midpoints for fair RL evaluation
     simulation_duration = 60  # Run for 60 seconds
     params = {
         "car_number": 15,
         "kd": 0.9,
         "kv": 0.6,
         "kc": 0.4,
-        "v_des": 30.0,
+        "v_des": 25.0,       # Training range: 15-35, midpoint = 25
         "max_v": 50.0,
         "min_v": 0.0,
-        "min_dis": 6.0,
-        "reaction_time": 0.8,
+        "min_dis": 5.5,      # Training range: 4-7, midpoint = 5.5
+        "reaction_time": 1.0, # Training range: 0.6-1.5, midpoint = 1.0
         "headway_time": 2.0,
-        "max_a": 4.0,
-        "min_a": -5.0,
+        "max_a": 4.0,        # Training range: 3-5, midpoint = 4
+        "min_a": -5.0,       # Training range: -6 to -4, midpoint = -5
         "min_gap": 2.0,
         "dt": 0.1
     }
@@ -268,6 +269,34 @@ def main():
     # --- Load Velocity Profiles (Conditional) ---
     if USE_VELOCITY_PROFILES:
         load_velocity_profiles(city_acc, city_bcc, city_accbcc, city_rl)
+    
+    # Override RL city's lead profile with a training-compatible profile
+    # The data.csv profile (0-14 m/s) is outside the training distribution (15-35 m/s).
+    # Generate a profile that matches what the agent trained on.
+    rl_lead_profile = [
+        (0.0,  25.0),   # Start at v_des
+        (10.0, 25.0),   # Cruise for 10s
+        (13.0, 18.0),   # Brake to 18 m/s over 3s
+        (20.0, 18.0),   # Hold 18 m/s
+        (23.0, 28.0),   # Accelerate to 28 m/s over 3s
+        (30.0, 28.0),   # Hold 28 m/s
+        (33.0, 15.0),   # Hard brake to 15 m/s over 3s
+        (40.0, 15.0),   # Hold 15 m/s
+        (44.0, 25.0),   # Recover to 25 m/s over 4s
+        (50.0, 25.0),   # Hold 25 m/s
+        (53.0, 30.0),   # Accelerate to 30 m/s over 3s
+        (60.0, 30.0),   # Hold until end
+    ]
+    city_rl.lead_velocity_profile = rl_lead_profile
+
+    # --- EMA Smoothing Filter for RL Actions ---
+    # alpha controls responsiveness vs smoothness:
+    #   alpha = 1.0 → no filtering (raw output)
+    #   alpha = 0.3 → moderate smoothing (good balance)
+    #   alpha = 0.1 → heavy smoothing (very smooth but laggy)
+    ema_alpha = 0.15
+    num_followers = len(city_rl.cars) - 1  # Exclude lead car
+    smoothed_actions = np.zeros(num_followers)
 
     # --- Run Simulation Loop ---
     print(f"Running simulation for {simulation_duration} seconds ({num_steps} steps)...")
@@ -281,12 +310,14 @@ def main():
         city_accbcc.run(dt)
 
         if model and city_rl.cars:
-            obs = _get_rl_observation(city_rl)
+            obs = _get_rl_observation(city_rl, v_des=params["v_des"])
             action, _ = model.predict(obs, deterministic=True)
-            # Apply actions to FOLLOWER cars only (indices 1..N-1)
+            # Apply EMA-smoothed actions to FOLLOWER cars only (indices 1..N-1)
             for i, car in enumerate(city_rl.cars[1:]):
                 if i < len(action):
-                    car.rl_action = float(action[i])
+                    raw_action = float(action[i][0])
+                    smoothed_actions[i] = ema_alpha * raw_action + (1 - ema_alpha) * smoothed_actions[i]
+                    car.rl_action = smoothed_actions[i]
         city_rl.run(dt)
     
     print("Simulation complete.")
