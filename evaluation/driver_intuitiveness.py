@@ -545,6 +545,11 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
         for c in cities.values():
             c.rear_cutout_time = rear_cutout_time
 
+    car_velocity_profiles = sc.get('car_velocity_profiles', None)
+    if car_velocity_profiles:
+        for c in cities.values():
+            c.car_velocity_profiles = dict(car_velocity_profiles)
+
     steps = int(sc['dur'] / params['dt'])
     road_len = city_acc.roads[0].length if city_acc.roads else 1000.0
     num_eval_followers = (params['car_number'] - 2) if follower_profile else (params['car_number'] - 1)

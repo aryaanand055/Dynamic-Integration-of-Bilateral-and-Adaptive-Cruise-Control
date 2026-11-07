@@ -17,7 +17,7 @@ from gui.control_window import ControlWindow
 from simulation.rl_city import RLCity
 from env.accel_traffic_env import AccelTrafficEnv
 from simulation.config import PROJECT_ROOT, MODELS_DIR, resolve_model_path
-from evaluation.evaluate_all_scenarios import get_scenarios, load_csv_profile
+from evaluation.evaluate_all_scenarios import get_scenarios, load_csv_profile, generate_random_speed_profile
 
 # ==============================================================================
 # INTUITIVENESS VERDICT CRITERIA CONFIGURATION
@@ -225,25 +225,115 @@ class RLControlWindow(ControlWindow):
             if action_card:
                 action_card.pack(fill="x", pady=(0, 12), before=first_widget)
 
+    def _apply_car_identities(self, city, sc=None):
+        """
+        Applies human-driven and autonomous algorithmic roles, color tags,
+        and attributes across all vehicles in a city for the selected scenario.
+        Human-driven vehicles retain #ef4444 (Vivid Crimson) throughout the WHOLE simulation.
+        """
+        if not city or not getattr(city, 'cars', None):
+            return
+
+        if sc is not None:
+            human_lead = sc.get('human_lead', False) or sc.get('reckless_lead', False)
+            human_trailing = sc.get('human_trailing', False) or sc.get('reckless_trailing', False)
+            human_idx = sc.get('human_car_index', sc.get('braking_car_index', None))
+
+            for i, car in enumerate(city.cars):
+                is_human = False
+                if i == 0 and human_lead:
+                    is_human = True
+                elif i == len(city.cars) - 1 and human_trailing:
+                    is_human = True
+                elif human_idx is not None and i == human_idx:
+                    is_human = True
+
+                car.is_human = is_human
+                car.is_reckless = is_human
+                car.driver_type = 'HUMAN' if is_human else 'ALGORITHM'
+
+                if is_human:
+                    car.color = "#ef4444"  # Human car (alone in vivid crimson red throughout whole sim)
+                    car.original_color = "#ef4444"
+                else:
+                    if i == 0:
+                        car.color = "#38bdf8"  # Autonomous lead (sky blue)
+                        car.original_color = "#38bdf8"
+                    elif getattr(car, 'is_rl', False) or (city is getattr(self, 'city_rl', None) and i == 1):
+                        car.color = "#22c55e"  # RL ego agent (emerald green)
+                        car.original_color = "#22c55e"
+                    elif i == len(city.cars) - 1:
+                        car.color = "#94a3b8"  # Autonomous trailing follower (slate silver)
+                        car.original_color = "#94a3b8"
+                    else:
+                        car.color = "#3b82f6"  # Platoon follower (blue)
+                        car.original_color = "#3b82f6"
+        else:
+            for i, car in enumerate(city.cars):
+                car.is_human = False
+                car.is_reckless = False
+                car.driver_type = 'ALGORITHM'
+                if i == 0:
+                    car.color = "#38bdf8"
+                    car.original_color = "#38bdf8"
+                elif getattr(car, 'is_rl', False) or (city is getattr(self, 'city_rl', None) and i == 1):
+                    car.color = "#22c55e"
+                    car.original_color = "#22c55e"
+                elif i == len(city.cars) - 1:
+                    car.color = "#94a3b8"
+                    car.original_color = "#94a3b8"
+                else:
+                    car.color = "#3b82f6"
+                    car.original_color = "#3b82f6"
+
     def _on_scenario_selected(self, _event=None):
         sel_idx = self.scenario_combobox.current()
         if sel_idx > 0 and sel_idx <= len(self.benchmark_scenarios):
             sc = self.benchmark_scenarios[sel_idx - 1]
             dur = sc.get('dur', 40.0)
             v_des = sc.get('v_des', 15.0)
+            human_lead = sc.get('human_lead', False) or sc.get('reckless_lead', False)
+            human_trailing = sc.get('human_trailing', False) or sc.get('reckless_trailing', False)
+            human_idx = sc.get('human_car_index', sc.get('braking_car_index', None))
+
+            human_info = ""
+            if human_lead and human_trailing:
+                human_info = " | 👤 Dual Human Drivers (Red [HUMAN])"
+            elif human_lead:
+                human_info = " | 👤 Human Lead Driver (Red [HUMAN])"
+            elif human_trailing:
+                human_info = " | 👤 Human Rear Driver (Red [HUMAN])"
+            elif human_idx is not None:
+                if sc.get('random_speed_shifts'):
+                    human_info = f" | 👤 Car #{human_idx + 1} Human Driver (Shifts to Random Speeds after 5s, Red [HUMAN])"
+                else:
+                    human_info = f" | 👤 Car #{human_idx + 1} Human Driver (Red [HUMAN])"
+
             self.scenario_info_label.config(
-                text=f"Dur: {dur:.0f}s | Target Speed: {v_des:.1f} m/s",
-                foreground="#38bdf8"
+                text=f"Dur: {dur:.0f}s | Target: {v_des:.1f} m/s{human_info}",
+                foreground="#f87171" if human_info else "#38bdf8"
             )
             # Pre-fill v_des entry
             if 'v_des' in self.entries:
                 self.entries['v_des'].delete(0, tk.END)
                 self.entries['v_des'].insert(0, str(v_des))
+
+            # Immediately update existing city cars and repaint canvas so human car turns red instantly
+            for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
+                self._apply_car_identities(city, sc)
+            for painter in getattr(self, 'painters', []):
+                if painter:
+                    painter.repaint()
         else:
             self.scenario_info_label.config(
                 text="Mode: Free simulation using parameter values",
                 foreground="#94a3b8"
             )
+            for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
+                self._apply_car_identities(city, None)
+            for painter in getattr(self, 'painters', []):
+                if painter:
+                    painter.repaint()
 
     def _scan_available_models(self):
         models = {}
@@ -348,6 +438,17 @@ class RLControlWindow(ControlWindow):
         # Tab 1: Road Simulation View
         self.tab_simulation = ttk.Frame(self.notebook, style="Pane.TFrame")
         self.notebook.add(self.tab_simulation, text="  Road Simulation  ")
+
+        # Fleet Vehicle Color Legend Bar
+        legend_frame = tk.Frame(self.tab_simulation, bg="#111827", padx=12, pady=6)
+        legend_frame.pack(fill="x", pady=(0, 6))
+
+        tk.Label(legend_frame, text="Fleet Legend:", fg="#94a3b8", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 10))
+        tk.Label(legend_frame, text="■ Lead (Normal)", fg="#38bdf8", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ RL Ego Agent", fg="#22c55e", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ Normal Follower", fg="#94a3b8", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ Human Car (Whole Sim)", fg="#ef4444", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ Collision", fg="#f97316", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
 
         self.visualizations_wrap = ttk.Frame(self.tab_simulation, style="Pane.TFrame")
         self.visualizations_wrap.pack(fill="both", expand=True)
@@ -537,8 +638,21 @@ class RLControlWindow(ControlWindow):
             lines_v, lines_a, lines_g = [], [], []
             cars = city.cars if city.cars else []
             for idx, car in enumerate(cars):
-                color = "#ef4444" if idx == 0 else "#22c55e" if idx == 2 else "#64748b"
-                lw = 1.4 if idx in (0, 2) else 0.75
+                if getattr(car, 'is_reckless', False):
+                    color = "#ef4444"
+                    lw = 1.6
+                elif idx == 0:
+                    color = "#38bdf8"
+                    lw = 1.3
+                elif getattr(car, 'is_rl', False) or idx == 1:
+                    color = "#22c55e"
+                    lw = 1.4
+                elif idx == len(cars) - 1:
+                    color = "#94a3b8"
+                    lw = 1.1
+                else:
+                    color = "#64748b"
+                    lw = 0.8
                 
                 lv, = ax_v.plot([], [], color=color, linewidth=lw)
                 la, = ax_a.plot([], [], color=color, linewidth=lw)
@@ -679,7 +793,7 @@ class RLControlWindow(ControlWindow):
 
         tk.Label(
             table_card,
-            text="15-Scenario Comprehensive Benchmark Results",
+            text="16-Scenario Comprehensive Benchmark Results",
             fg="#e2e8f0",
             bg="#111827",
             font=("Segoe UI", 10, "bold")
@@ -818,7 +932,7 @@ class RLControlWindow(ControlWindow):
         self.btn_run_eval.config(state="disabled", text="⏳ Running Evaluation...")
         if hasattr(self, 'status_bar') and self.status_bar:
             self.status_bar.config(
-                text="Running full 15-scenario Driver Intuitiveness evaluation suite in background...",
+                text="Running full 16-scenario Driver Intuitiveness evaluation suite in background...",
                 fg="#38bdf8"
             )
 
@@ -1002,10 +1116,6 @@ class RLControlWindow(ControlWindow):
         self.painter_accbcc.set_elements(self.city_accbcc.roads, self.city_accbcc.cars)
         self.painter_rl.set_elements(self.city_rl.roads, self.city_rl.cars)
 
-        # Refresh real-time telemetry artists with new car fleet
-        if hasattr(self, 'telemetry_canvas'):
-            self._init_telemetry_artists()
-
         # Reset live intuitiveness statistics & tiles
         if hasattr(self, 'live_tiles'):
             for name in self.live_tiles:
@@ -1032,35 +1142,77 @@ class RLControlWindow(ControlWindow):
 
             follower_profile = sc.get('follower_profile', None)
             rear_cutout_time = sc.get('rear_cutout_time', None)
+            car_velocity_profiles = sc.get('car_velocity_profiles', None)
+            braking_car_idx = sc.get('human_car_index', sc.get('braking_car_index', None))
+            human_lead = sc.get('human_lead', False) or sc.get('reckless_lead', False)
+            human_trailing = sc.get('human_trailing', False) or sc.get('reckless_trailing', False)
+
+            if sc.get('random_speed_shifts') and braking_car_idx is not None:
+                # Generate a dynamic randomized speed profile for this run
+                fresh_profile = generate_random_speed_profile(
+                    t_start=5.0,
+                    dur=sc.get('dur', 40.0),
+                    v_init=sc.get('v_des', 15.0),
+                    seed=None
+                )
+                car_velocity_profiles = {braking_car_idx: fresh_profile}
+                follower_profile = list(fresh_profile)
 
             for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
                 city.lead_velocity_profile = list(lead_profile) if lead_profile else []
                 city.follower_velocity_profile = list(follower_profile) if follower_profile else []
                 city.rear_cutout_time = rear_cutout_time
+                city.car_velocity_profiles = dict(car_velocity_profiles) if car_velocity_profiles else {}
+                self._apply_car_identities(city, sc)
 
             # Configure RL mode: car 0 is leader, car N-1 (if follower profile) is human follower
+            # If braking_car_idx is set, that car executes braking profile and is not RL
             for i, car in enumerate(self.city_rl.cars):
-                if i == 0:
+                if i == 0 or getattr(car, 'is_human', False) or (i == len(self.city_rl.cars) - 1 and follower_profile and braking_car_idx is None):
                     car.is_rl = False
                     car.mode = 'ACC'
-                elif i == len(self.city_rl.cars) - 1 and follower_profile:
-                    car.is_rl = False
-                    car.mode = 'ACC'
+                    if getattr(car, 'is_human', False):
+                        car.color = "#ef4444"
+                        car.original_color = "#ef4444"
                 else:
                     car.is_rl = True
                     car.rl_action = 0.0
+                    car.color = "#22c55e"
+                    car.original_color = "#22c55e"
+
+            human_str = ""
+            if human_lead and human_trailing:
+                human_str = " | 👤 Dual Human Drivers (Red [HUMAN])"
+            elif human_lead:
+                human_str = " | 👤 Human Lead Driver (Red [HUMAN])"
+            elif human_trailing:
+                human_str = " | 👤 Human Rear Driver (Red [HUMAN])"
+            elif braking_car_idx is not None:
+                if sc.get('random_speed_shifts'):
+                    human_str = f" | 👤 Car #{braking_car_idx + 1} Human Driver (Random Speeds, Red [HUMAN])"
+                else:
+                    human_str = f" | 👤 Car #{braking_car_idx + 1} Human Driver (Red [HUMAN])"
 
             if hasattr(self, 'status_bar') and self.status_bar:
                 self.status_bar.config(
-                    text=f"▶ Running {sc['name']} (Dur: {sc['dur']:.0f}s, Target: {sc['v_des']:.1f} m/s)",
-                    fg="#38bdf8"
+                    text=f"▶ Running {sc['name']} (Dur: {sc['dur']:.0f}s, Target: {sc['v_des']:.1f} m/s){human_str}",
+                    fg="#f87171" if human_str else "#38bdf8"
                 )
         else:
+            for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
+                city.lead_velocity_profile = []
+                city.follower_velocity_profile = []
+                city.rear_cutout_time = None
+                city.car_velocity_profiles = {}
+                self._apply_car_identities(city, None)
+
             # Set cars to RL mode (except the lead car)
             for i, car in enumerate(self.city_rl.cars):
                 if i > 0:
                     car.is_rl = True
                     car.rl_action = 0.0
+                    car.color = "#22c55e"
+                    car.original_color = "#22c55e"
                 else:
                     car.is_rl = False
                     car.mode = 'ACC'
@@ -1082,6 +1234,15 @@ class RLControlWindow(ControlWindow):
                     text="▶ Running Free Manual Simulation",
                     fg="#94a3b8"
                 )
+
+        # Force immediate canvas repaint with newly configured car colors
+        for painter in self.painters:
+            if painter:
+                painter.repaint()
+
+        # Refresh real-time telemetry artists with new car fleet & colors
+        if hasattr(self, 'telemetry_canvas'):
+            self._init_telemetry_artists()
 
         self.current_step = 0
         self.start_timer()
@@ -1230,6 +1391,20 @@ class RLControlWindow(ControlWindow):
             self.metric_value_total.config(text=f"{total_energy_all:08.4f} kWh")
             self.metric_value_vel.config(text=f"{get_avg_v(self.city_rl):05.2f} m/s")
 
+            # Live status bar speed update for human-driven vehicle
+            if hasattr(self, 'status_bar') and self.status_bar:
+                sel_idx = self.scenario_combobox.current() if hasattr(self, 'scenario_combobox') else 0
+                if sel_idx > 0 and sel_idx <= len(self.benchmark_scenarios):
+                    sc = self.benchmark_scenarios[sel_idx - 1]
+                    human_idx = sc.get('human_car_index', sc.get('braking_car_index', None))
+                    if human_idx is not None and len(self.city_rl.cars) > human_idx:
+                        h_car = self.city_rl.cars[human_idx]
+                        cur_t = self.current_step * dt
+                        self.status_bar.config(
+                            text=f"▶ {sc['name']} | t = {cur_t:.1f}s | 👤 Car #{human_idx + 1} (Human) Speed: {h_car.velocity:.1f} m/s (acc: {h_car.acceleration:+.2f} m/s²)",
+                            fg="#f87171"
+                        )
+
             # Capture video frame if recording is active
             if hasattr(self, "recorder") and self.recorder.is_recording:
                 target = getattr(self, "root", self.master)
@@ -1280,8 +1455,22 @@ class RLControlWindow(ControlWindow):
             # 1. Velocity (Col 0)
             for idx, car in enumerate(city.cars):
                 time_axis = [dt * i for i in range(len(car.vel_history))]
-                color = "red" if idx == 0 else "green" if idx == 2 else "grey"
-                linewidth = 1.5 if idx in (0, 2) else 0.5
+                is_rec = getattr(car, 'is_reckless', False)
+                if is_rec:
+                    color = "#ef4444"
+                    linewidth = 1.8
+                elif idx == 0:
+                    color = "#38bdf8"
+                    linewidth = 1.3
+                elif getattr(car, 'is_rl', False) or idx == 1:
+                    color = "#22c55e"
+                    linewidth = 1.4
+                elif idx == len(city.cars) - 1:
+                    color = "#94a3b8"
+                    linewidth = 1.1
+                else:
+                    color = "#64748b"
+                    linewidth = 0.8
                 axes[row, 0].plot(time_axis, car.vel_history, color=color, linewidth=linewidth)
             
             axes[row, 0].set_title(f"{name} Velocity")
@@ -1292,8 +1481,22 @@ class RLControlWindow(ControlWindow):
             # 2. Acceleration (Col 1)
             for idx, car in enumerate(city.cars):
                 time_axis = [dt * i for i in range(len(car.acc_history))]
-                color = "red" if idx == 0 else "green" if idx == 2 else "grey"
-                linewidth = 1.5 if idx in (0, 2) else 0.5
+                is_rec = getattr(car, 'is_reckless', False)
+                if is_rec:
+                    color = "#ef4444"
+                    linewidth = 1.8
+                elif idx == 0:
+                    color = "#38bdf8"
+                    linewidth = 1.3
+                elif getattr(car, 'is_rl', False) or idx == 1:
+                    color = "#22c55e"
+                    linewidth = 1.4
+                elif idx == len(city.cars) - 1:
+                    color = "#94a3b8"
+                    linewidth = 1.1
+                else:
+                    color = "#64748b"
+                    linewidth = 0.8
                 axes[row, 1].plot(time_axis, car.acc_history, color=color, linewidth=linewidth)
                 
             axes[row, 1].set_title(f"{name} Acceleration")
@@ -1306,8 +1509,19 @@ class RLControlWindow(ControlWindow):
                 if idx == 0:
                     continue
                 time_axis = [dt * i for i in range(len(car.gap_history))]
-                color = "green" if idx == 2 else "grey"
-                linewidth = 1.5 if idx == 2 else 0.5
+                is_rec = getattr(car, 'is_reckless', False)
+                if is_rec:
+                    color = "#ef4444"
+                    linewidth = 1.8
+                elif getattr(car, 'is_rl', False) or idx == 1:
+                    color = "#22c55e"
+                    linewidth = 1.4
+                elif idx == len(city.cars) - 1:
+                    color = "#94a3b8"
+                    linewidth = 1.1
+                else:
+                    color = "#64748b"
+                    linewidth = 0.8
                 axes[row, 2].plot(time_axis, car.gap_history, color=color, linewidth=linewidth)
                 
             axes[row, 2].axhline(y=min_dis, color="orange", linestyle="--", linewidth=1.0, alpha=0.8, label=f"min_dis ({min_dis}m)")

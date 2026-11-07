@@ -31,6 +31,33 @@ def load_csv_profile(filename):
         print(f"Warning: CSV profile not found at {profile_path}")
     return profile
 
+def generate_random_speed_profile(t_start=5.0, dur=40.0, v_init=15.0, min_speed=4.0, max_speed=24.0, seed=None):
+    """
+    Generates a realistic multi-stage velocity profile where the vehicle maintains v_init
+    for t_start seconds, then dynamically shifts between varied random speeds.
+    """
+    rng = np.random.RandomState(seed) if seed is not None else np.random
+    profile = [(0.0, v_init), (t_start, v_init)]
+    cur_t = t_start
+    cur_v = v_init
+    while cur_t < dur:
+        new_v = round(float(rng.uniform(min_speed, max_speed)), 1)
+        while abs(new_v - cur_v) < 4.0:
+            new_v = round(float(rng.uniform(min_speed, max_speed)), 1)
+        dv = abs(new_v - cur_v)
+        transition_dur = round(max(2.0, min(4.5, dv / 3.0)), 1)
+        trans_t = round(min(dur, cur_t + transition_dur), 2)
+        profile.append((trans_t, new_v))
+        hold_dur = round(float(rng.uniform(2.0, 4.0)), 1)
+        hold_t = round(min(dur, trans_t + hold_dur), 2)
+        if hold_t > trans_t:
+            profile.append((hold_t, new_v))
+        cur_t = hold_t
+        cur_v = new_v
+    if profile[-1][0] < dur:
+        profile.append((dur, profile[-1][1]))
+    return profile
+
 def get_scenarios():
     """Returns the official 9 operational evaluation scenarios."""
     scenarios = [
@@ -111,6 +138,10 @@ def get_scenarios():
             "v_des": 15.0,
             "type": "none",
             "dur": 45.0,
+            "human_lead": False,
+            "human_trailing": True,
+            "reckless_lead": False,
+            "reckless_trailing": True,
             "follower_profile": [
                 (0.0, 15.0),
                 (5.0, 15.0),
@@ -132,6 +163,10 @@ def get_scenarios():
             "v_des": 20.0,
             "type": "synthetic",
             "dur": 40.0,
+            "human_lead": False,
+            "human_trailing": True,
+            "reckless_lead": False,
+            "reckless_trailing": True,
             "profile": [
                 (0.0, 20.0),
                 (10.0, 20.0),
@@ -153,6 +188,8 @@ def get_scenarios():
             "v_des": 15.0,
             "type": "none",
             "dur": 40.0,
+            "reckless_lead": False,
+            "reckless_trailing": False,
             "rear_cutout_time": 12.0,
             "follower_profile": [
                 (0.0, 15.0),
@@ -165,6 +202,10 @@ def get_scenarios():
             "v_des": 18.0,
             "type": "synthetic",
             "dur": 45.0,
+            "human_lead": True,
+            "human_trailing": False,
+            "reckless_lead": True,
+            "reckless_trailing": False,
             "profile": [
                 (0.0, 18.0),
                 (5.0, 18.0),
@@ -188,6 +229,10 @@ def get_scenarios():
             "v_des": 18.0,
             "type": "none",
             "dur": 45.0,
+            "human_lead": False,
+            "human_trailing": True,
+            "reckless_lead": False,
+            "reckless_trailing": True,
             "follower_profile": [
                 (0.0, 18.0),
                 (5.0, 18.0),
@@ -212,6 +257,10 @@ def get_scenarios():
             "v_des": 18.0,
             "type": "synthetic",
             "dur": 45.0,
+            "human_lead": True,
+            "human_trailing": True,
+            "reckless_lead": True,
+            "reckless_trailing": True,
             "profile": [
                 (0.0, 18.0),
                 (5.0, 18.0),
@@ -241,6 +290,23 @@ def get_scenarios():
                 (38.0, 18.0),
                 (45.0, 18.0)
             ]
+        },
+        {
+            "id": "third_car_random_speeds",
+            "name": "16. 3rd Car Shifts to Random Speeds After 5s Constant Speed (Human-in-Platoon)",
+            "v_des": 15.0,
+            "type": "none",
+            "dur": 40.0,
+            "human_car_index": 2,
+            "braking_car_index": 2,
+            "reckless_car_index": 2,
+            "reckless_lead": False,
+            "reckless_trailing": False,
+            "random_speed_shifts": True,
+            "car_velocity_profiles": {
+                2: generate_random_speed_profile(t_start=5.0, dur=40.0, v_init=15.0, seed=42)
+            },
+            "follower_profile": generate_random_speed_profile(t_start=5.0, dur=40.0, v_init=15.0, seed=42)
         }
     ]
     return scenarios
@@ -312,6 +378,11 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         if rear_cutout_time is not None:
             for c in [city_acc, city_bcc, city_accbcc, city_rl]:
                 c.rear_cutout_time = rear_cutout_time
+
+        car_velocity_profiles = sc.get('car_velocity_profiles', None)
+        if car_velocity_profiles:
+            for c in [city_acc, city_bcc, city_accbcc, city_rl]:
+                c.car_velocity_profiles = dict(car_velocity_profiles)
                 
         steps = int(sc['dur'] / params['dt'])
         collisions = 0

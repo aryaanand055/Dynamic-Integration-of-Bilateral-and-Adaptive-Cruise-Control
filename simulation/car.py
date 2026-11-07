@@ -27,6 +27,10 @@ class Car:
         self.x_history = []
         self.switch_events = []
         self.target_speed = None
+        self.is_reckless = False
+        self.is_human = False
+        self.driver_type = 'ALGORITHM'
+        self.original_color = color
 
     def get_length(self):
         return self.length

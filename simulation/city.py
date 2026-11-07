@@ -43,13 +43,16 @@ class City:
             headway = min_dis + velocity * reaction_time
             pos = 1000 - (car_number - 1 -i) * (car_length + headway) 
             if i == 0:
-                color = 'red'  
+                color = '#38bdf8'  # Normal Lead vehicle (Sky Blue)
             elif i == car_number - 1:
-                color = 'green'
+                color = '#94a3b8'  # Normal Trailing vehicle (Slate Silver)
             else:
-                color = 'blue'
+                color = '#3b82f6'  # Normal Platoon / Follower vehicle (Blue)
             car = Car(length=car_length, color=color, pos=pos,min_dis=min_dis, velocity=velocity, acceleration=0, current_road=road)
             car.original_color = color  
+            car.is_reckless = False  
+            car.is_human = False
+            car.driver_type = 'ALGORITHM'
             car.collision_timer = 0
             car.gap_history = [headway if i > 0 else 0.0]
             self.cars.append(car)
@@ -70,6 +73,7 @@ class City:
         self.min_dis = min_dis
         self.min_gap = min_gap
         self.rear_cutout_time = None
+        self.car_velocity_profiles = {}
 
     def run(self, dt=None):
         # Run one simulation step with real dt
@@ -128,7 +132,42 @@ class City:
         for idx, car in enumerate(self.cars):
             if getattr(car, 'has_exited', False):
                 continue
-            # self.v_des = 0 if (getattr(self, 'follower_stop', False) and idx == 2) else self.initial_v_des
+
+            # Check if this specific car index has an assigned velocity profile
+            if hasattr(self, 'car_velocity_profiles') and idx in self.car_velocity_profiles and self.car_velocity_profiles[idx]:
+                profile = self.car_velocity_profiles[idx]
+                time = round(self.step_count * dt, 3)
+                for i in range(len(profile) - 1):
+                    t1, v1 = profile[i]
+                    t2, v2 = profile[i + 1]
+                    if t1 <= time <= t2:
+                        alpha = (time - t1) / (t2 - t1)
+                        target_velocity = v1 + alpha * (v2 - v1)
+                        acc = (target_velocity - car.velocity) / dt
+                        acc = max(self.min_a, min(self.max_a, acc))
+                        last_acc = car.acceleration
+                        jerk = (acc - last_acc) / dt
+                        max_jerk = 5.0
+                        if jerk > max_jerk:
+                            acc = last_acc + max_jerk * dt
+                        elif jerk < -max_jerk:
+                            acc = last_acc - max_jerk * dt
+                        car.acceleration = acc
+                        break
+                else:
+                    t1, v1 = profile[-1]
+                    target_velocity = v1
+                    acc = (target_velocity - car.velocity) / dt
+                    acc = max(self.min_a, min(self.max_a, acc))
+                    last_acc = car.acceleration
+                    jerk = (acc - last_acc) / dt
+                    max_jerk = 5.0
+                    if jerk > max_jerk:
+                        acc = last_acc + max_jerk * dt
+                    elif jerk < -max_jerk:
+                        acc = last_acc - max_jerk * dt
+                    car.acceleration = acc
+                continue
 
             if idx == 0:
                 if getattr(self, 'leader_stop', False):
