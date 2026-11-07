@@ -17,6 +17,7 @@ from gui.control_window import ControlWindow
 from simulation.rl_city import RLCity
 from env.accel_traffic_env import AccelTrafficEnv
 from simulation.config import PROJECT_ROOT, MODELS_DIR, resolve_model_path
+from evaluation.evaluate_all_scenarios import get_scenarios, load_csv_profile
 
 # ==============================================================================
 # INTUITIVENESS VERDICT CRITERIA CONFIGURATION
@@ -146,6 +147,33 @@ class RLControlWindow(ControlWindow):
     def _build_controls(self):
         super()._build_controls()
 
+        # Benchmark Scenario Selection Card
+        scenario_card = tk.Frame(self.controls_container, bg="#111827", padx=10, pady=10)
+        scenario_card.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(scenario_card, text="Scenario Selection", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(scenario_card, text="Select operational benchmark regime (1–15)", style="Meta.TLabel").pack(anchor="w", pady=(0, 8))
+
+        self.benchmark_scenarios = get_scenarios()
+        self.scenario_options = ["0. Default Free Simulation"] + [sc['name'] for sc in self.benchmark_scenarios]
+        self.selected_scenario_var = tk.StringVar(value=self.scenario_options[0])
+
+        self.scenario_combobox = ttk.Combobox(
+            scenario_card,
+            textvariable=self.selected_scenario_var,
+            values=self.scenario_options,
+            state="readonly",
+        )
+        self.scenario_combobox.pack(fill="x", pady=(0, 6))
+        self.scenario_combobox.bind("<<ComboboxSelected>>", self._on_scenario_selected)
+
+        self.scenario_info_label = ttk.Label(
+            scenario_card,
+            text="Mode: Free simulation using parameter values",
+            style="Meta.TLabel",
+        )
+        self.scenario_info_label.pack(anchor="w")
+
         # RL Model Selection Card
         model_card = tk.Frame(self.controls_container, bg="#111827", padx=10, pady=10)
         model_card.pack(fill="x", pady=(0, 10))
@@ -187,6 +215,35 @@ class RLControlWindow(ControlWindow):
         # Load initial model
         if default_choice and default_choice in self.available_models:
             self.load_rl_model(self.available_models[default_choice])
+
+        # Promote Scenario Selection, Model Selection, and Simulation Actions to the top of the controls column
+        first_widget = self.control_cards[0] if hasattr(self, 'control_cards') and self.control_cards else None
+        action_card = getattr(self, 'action_card', None) or (self.run_button.master if hasattr(self, 'run_button') else None)
+        if first_widget:
+            scenario_card.pack(fill="x", pady=(0, 10), before=first_widget)
+            model_card.pack(fill="x", pady=(0, 10), before=first_widget)
+            if action_card:
+                action_card.pack(fill="x", pady=(0, 12), before=first_widget)
+
+    def _on_scenario_selected(self, _event=None):
+        sel_idx = self.scenario_combobox.current()
+        if sel_idx > 0 and sel_idx <= len(self.benchmark_scenarios):
+            sc = self.benchmark_scenarios[sel_idx - 1]
+            dur = sc.get('dur', 40.0)
+            v_des = sc.get('v_des', 15.0)
+            self.scenario_info_label.config(
+                text=f"Dur: {dur:.0f}s | Target Speed: {v_des:.1f} m/s",
+                foreground="#38bdf8"
+            )
+            # Pre-fill v_des entry
+            if 'v_des' in self.entries:
+                self.entries['v_des'].delete(0, tk.END)
+                self.entries['v_des'].insert(0, str(v_des))
+        else:
+            self.scenario_info_label.config(
+                text="Mode: Free simulation using parameter values",
+                foreground="#94a3b8"
+            )
 
     def _scan_available_models(self):
         models = {}
@@ -622,7 +679,7 @@ class RLControlWindow(ControlWindow):
 
         tk.Label(
             table_card,
-            text="12-Scenario Comprehensive Benchmark Results",
+            text="15-Scenario Comprehensive Benchmark Results",
             fg="#e2e8f0",
             bg="#111827",
             font=("Segoe UI", 10, "bold")
@@ -761,7 +818,7 @@ class RLControlWindow(ControlWindow):
         self.btn_run_eval.config(state="disabled", text="⏳ Running Evaluation...")
         if hasattr(self, 'status_bar') and self.status_bar:
             self.status_bar.config(
-                text="Running full 12-scenario Driver Intuitiveness evaluation suite in background...",
+                text="Running full 15-scenario Driver Intuitiveness evaluation suite in background...",
                 fg="#38bdf8"
             )
 
@@ -956,25 +1013,75 @@ class RLControlWindow(ControlWindow):
                 for tile in self.live_tiles[name].values():
                     tile.config(text="--")
 
-        # Set cars to RL mode (except the lead car)
-        for i, car in enumerate(self.city_rl.cars):
-            if i > 0:
-                car.is_rl = True
-                car.rl_action = 0.0
-            else:
-                car.is_rl = False
-                car.mode = 'ACC'
+        # Check if a benchmark scenario is selected from the dropdown
+        sel_idx = self.scenario_combobox.current() if hasattr(self, 'scenario_combobox') else 0
+        if sel_idx > 0 and sel_idx <= len(self.benchmark_scenarios):
+            sc = self.benchmark_scenarios[sel_idx - 1]
 
-        # Handle velocity profiles if enabled
-        if self.use_velocity_profile.get():
-            self.load_velocity_profile()
+            # Configure lead velocity profile
+            lead_profile = []
+            if sc['type'] == 'csv':
+                lead_profile = load_csv_profile(sc['csv_file'])
+            elif sc['type'] == 'synthetic':
+                lead_profile = sc['profile']
+            elif sc['type'] == 'wave':
+                lead_profile = [
+                    (t, 15.0 + 4.0 * np.sin(2 * np.pi * t / 15.0))
+                    for t in np.arange(0, sc['dur'] + 1.0, 0.5)
+                ]
+
+            follower_profile = sc.get('follower_profile', None)
+            rear_cutout_time = sc.get('rear_cutout_time', None)
+
             for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
-                city.lead_velocity_profile = self.ego_velocity_profile
-                city.follower_velocity_profile = self.ego_velocity_profile_1
+                city.lead_velocity_profile = list(lead_profile) if lead_profile else []
+                city.follower_velocity_profile = list(follower_profile) if follower_profile else []
+                city.rear_cutout_time = rear_cutout_time
+
+            # Configure RL mode: car 0 is leader, car N-1 (if follower profile) is human follower
+            for i, car in enumerate(self.city_rl.cars):
+                if i == 0:
+                    car.is_rl = False
+                    car.mode = 'ACC'
+                elif i == len(self.city_rl.cars) - 1 and follower_profile:
+                    car.is_rl = False
+                    car.mode = 'ACC'
+                else:
+                    car.is_rl = True
+                    car.rl_action = 0.0
+
+            if hasattr(self, 'status_bar') and self.status_bar:
+                self.status_bar.config(
+                    text=f"▶ Running {sc['name']} (Dur: {sc['dur']:.0f}s, Target: {sc['v_des']:.1f} m/s)",
+                    fg="#38bdf8"
+                )
         else:
-            for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
-                city.lead_velocity_profile = []
-                city.follower_velocity_profile = []
+            # Set cars to RL mode (except the lead car)
+            for i, car in enumerate(self.city_rl.cars):
+                if i > 0:
+                    car.is_rl = True
+                    car.rl_action = 0.0
+                else:
+                    car.is_rl = False
+                    car.mode = 'ACC'
+
+            # Handle velocity profiles if enabled
+            if self.use_velocity_profile.get():
+                self.load_velocity_profile()
+                for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
+                    city.lead_velocity_profile = self.ego_velocity_profile
+                    city.follower_velocity_profile = self.ego_velocity_profile_1
+                    city.rear_cutout_time = None
+            else:
+                for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
+                    city.lead_velocity_profile = []
+                    city.follower_velocity_profile = []
+                    city.rear_cutout_time = None
+            if hasattr(self, 'status_bar') and self.status_bar:
+                self.status_bar.config(
+                    text="▶ Running Free Manual Simulation",
+                    fg="#94a3b8"
+                )
 
         self.current_step = 0
         self.start_timer()
