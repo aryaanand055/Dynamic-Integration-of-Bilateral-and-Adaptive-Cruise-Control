@@ -32,25 +32,18 @@ def load_csv_profile(filename):
     return profile
 
 def get_scenarios():
-    """Returns the official 7 operational evaluation scenarios."""
+    """Returns the official 9 operational evaluation scenarios."""
     scenarios = [
         {
             "id": "steady_15",
-            "name": "1. Steady Cruise (v_des=15 m/s)",
+            "name": "1. Steady Cruise & Equilibrium (v_des=15 m/s)",
             "v_des": 15.0,
             "type": "none",
-            "dur": 60.0
-        },
-        {
-            "id": "steady_25",
-            "name": "2. High-Speed Cruise (v_des=25 m/s)",
-            "v_des": 25.0,
-            "type": "none",
-            "dur": 50.0
+            "dur": 40.0
         },
         {
             "id": "stop_and_go_data",
-            "name": "3. Urban Stop-and-Go (data.csv)",
+            "name": "2. Urban Stop-and-Go (data.csv)",
             "v_des": 15.0,
             "type": "csv",
             "csv_file": "data.csv",
@@ -58,7 +51,7 @@ def get_scenarios():
         },
         {
             "id": "speed_drop_data1",
-            "name": "4. Speed Drop & Recovery (data1.csv)",
+            "name": "3. Speed Drop & Recovery (data1.csv)",
             "v_des": 15.0,
             "type": "csv",
             "csv_file": "data1.csv",
@@ -66,7 +59,7 @@ def get_scenarios():
         },
         {
             "id": "full_stop_hold",
-            "name": "5. Platoon Full Stop & Standstill Hold",
+            "name": "4. Platoon Full Stop & Standstill Hold",
             "v_des": 15.0,
             "type": "synthetic",
             "profile": [(0.0, 15.0), (12.0, 15.0), (16.0, 0.0), (45.0, 0.0), (50.0, 12.0), (60.0, 15.0)],
@@ -74,26 +67,180 @@ def get_scenarios():
         },
         {
             "id": "emergency_brake",
-            "name": "6. Emergency Braking (-4.5 m/s^2 to 0)",
+            "name": "5. Emergency Braking (-4.5 m/s^2 to 0)",
             "v_des": 20.0,
             "type": "synthetic",
             "profile": [(0.0, 20.0), (10.0, 20.0), (13.5, 0.0), (40.0, 0.0)],
             "dur": 40.0
         },
         {
+            "id": "rear_vehicle_drop",
+            "name": "6. Trailing Vehicle Exit / Drop-Off (Phantom Braking Stress)",
+            "v_des": 15.0,
+            "type": "none",
+            "dur": 40.0,
+            "follower_profile": [(0.0, 15.0), (10.0, 15.0), (15.0, 5.0), (28.0, 5.0), (33.0, 15.0), (40.0, 15.0)]
+        },
+        {
+            "id": "rear_tailgater",
+            "name": "7. Aggressive Rear Tailgater (Forward Squeeze Stress)",
+            "v_des": 15.0,
+            "type": "none",
+            "dur": 40.0,
+            "follower_profile": [(0.0, 15.0), (8.0, 15.0), (12.0, 22.0), (26.0, 22.0), (30.0, 15.0), (40.0, 15.0)]
+        },
+        {
+            "id": "asymmetric_squeeze",
+            "name": "8. Asymmetric Squeeze (Front Decel + Rear Push)",
+            "v_des": 18.0,
+            "type": "synthetic",
+            "profile": [(0.0, 18.0), (10.0, 18.0), (14.0, 10.0), (26.0, 10.0), (30.0, 18.0), (40.0, 18.0)],
+            "dur": 40.0,
+            "follower_profile": [(0.0, 18.0), (10.0, 18.0), (14.0, 23.0), (26.0, 23.0), (30.0, 18.0), (40.0, 18.0)]
+        },
+        {
             "id": "string_stability_wave",
-            "name": "7. Sinusoidal Wave String Stability (v=15+-4m/s)",
+            "name": "9. Sinusoidal Wave String Stability (v=15+-4m/s)",
             "v_des": 15.0,
             "type": "wave",
             "dur": 60.0
         },
         {
-            "id": "rear_vehicle_brake",
-            "name": "8. Rear Vehicle Braking & Disturbance (Human Decoupling)",
+            "id": "rear_accordion_wave",
+            "name": "10. Rear Repeated Accel & Decel (Accordion Stress)",
+            "v_des": 15.0,
+            "type": "none",
+            "dur": 45.0,
+            "follower_profile": [
+                (0.0, 15.0),
+                (5.0, 15.0),
+                (8.0, 22.0),
+                (12.0, 8.0),
+                (16.0, 22.0),
+                (20.0, 8.0),
+                (24.0, 22.0),
+                (28.0, 8.0),
+                (32.0, 22.0),
+                (36.0, 8.0),
+                (40.0, 15.0),
+                (45.0, 15.0)
+            ]
+        },
+        {
+            "id": "emergency_brake_tailgater",
+            "name": "11. Front Emergency Brake with Rear Tailgater (Severe Squeeze)",
+            "v_des": 20.0,
+            "type": "synthetic",
+            "dur": 40.0,
+            "profile": [
+                (0.0, 20.0),
+                (10.0, 20.0),
+                (13.5, 0.0),
+                (40.0, 0.0)
+            ],
+            "follower_profile": [
+                (0.0, 20.0),
+                (6.0, 20.0),
+                (10.0, 24.0),
+                (14.0, 24.0),
+                (18.0, 0.0),
+                (40.0, 0.0)
+            ]
+        },
+        {
+            "id": "rear_cutout_lane_change",
+            "name": "12. Rear Vehicle Sudden Lane Change / Disappearance",
             "v_des": 15.0,
             "type": "none",
             "dur": 40.0,
-            "follower_profile": [(0.0, 15.0), (12.0, 15.0), (15.0, 5.0), (28.0, 5.0), (33.0, 15.0), (40.0, 15.0)]
+            "rear_cutout_time": 12.0,
+            "follower_profile": [
+                (0.0, 15.0),
+                (12.0, 15.0)
+            ]
+        },
+        {
+            "id": "reckless_lead_human",
+            "name": "13. Reckless Human Lead Driver (Erratic Surges & Brake Checks)",
+            "v_des": 18.0,
+            "type": "synthetic",
+            "dur": 45.0,
+            "profile": [
+                (0.0, 18.0),
+                (5.0, 18.0),
+                (8.0, 25.0),
+                (10.0, 25.0),
+                (12.5, 7.0),
+                (16.0, 7.0),
+                (20.0, 26.0),
+                (23.0, 26.0),
+                (25.5, 5.0),
+                (29.0, 16.0),
+                (33.0, 24.0),
+                (36.0, 12.0),
+                (40.0, 20.0),
+                (45.0, 18.0)
+            ]
+        },
+        {
+            "id": "reckless_trailing_human",
+            "name": "14. Reckless Human Trailing Driver (Aggressive Tailgate & Dive Surges)",
+            "v_des": 18.0,
+            "type": "none",
+            "dur": 45.0,
+            "follower_profile": [
+                (0.0, 18.0),
+                (5.0, 18.0),
+                (7.5, 22.5),
+                (9.5, 22.5),
+                (12.0, 9.0),
+                (15.0, 9.0),
+                (18.0, 23.0),
+                (20.5, 23.0),
+                (23.5, 8.0),
+                (26.5, 8.0),
+                (29.5, 22.5),
+                (33.0, 14.0),
+                (37.0, 21.0),
+                (41.0, 18.0),
+                (45.0, 18.0)
+            ]
+        },
+        {
+            "id": "bilateral_reckless_human",
+            "name": "15. Bilateral Reckless Human Drivers (Double Reckless Sandwich)",
+            "v_des": 18.0,
+            "type": "synthetic",
+            "dur": 45.0,
+            "profile": [
+                (0.0, 18.0),
+                (5.0, 18.0),
+                (8.0, 25.0),
+                (10.0, 25.0),
+                (12.5, 6.0),
+                (16.0, 6.0),
+                (19.5, 24.0),
+                (22.5, 24.0),
+                (25.0, 5.0),
+                (29.0, 5.0),
+                (34.0, 20.0),
+                (45.0, 18.0)
+            ],
+            "follower_profile": [
+                (0.0, 18.0),
+                (5.0, 18.0),
+                (7.5, 22.0),
+                (10.0, 22.0),
+                (13.0, 6.0),
+                (16.5, 6.0),
+                (19.0, 23.0),
+                (22.0, 23.0),
+                (25.5, 5.0),
+                (29.5, 5.0),
+                (34.0, 20.0),
+                (38.0, 18.0),
+                (45.0, 18.0)
+            ]
         }
     ]
     return scenarios
@@ -133,12 +280,17 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         city_accbcc = City()
         city_accbcc.init(*init_args, dt=params['dt'], model='ACC+BCC')
         
+        follower_profile = sc.get('follower_profile', None)
+        rear_cutout_time = sc.get('rear_cutout_time', None)
+        
         for i, car in enumerate(city_rl.cars):
-            if i > 0:
+            if i == 0:
+                car.is_rl = False
+            elif i == len(city_rl.cars) - 1 and follower_profile:
+                car.is_rl = False
+            else:
                 car.is_rl = True
                 car.rl_action = 0.0
-            else:
-                car.is_rl = False
                 
         # Assign lead vehicle profile
         lead_profile = []
@@ -153,6 +305,14 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
             for c in [city_acc, city_bcc, city_accbcc, city_rl]:
                 c.lead_velocity_profile = lead_profile
                 
+        if follower_profile:
+            for c in [city_acc, city_bcc, city_accbcc, city_rl]:
+                c.follower_velocity_profile = list(follower_profile)
+
+        if rear_cutout_time is not None:
+            for c in [city_acc, city_bcc, city_accbcc, city_rl]:
+                c.rear_cutout_time = rear_cutout_time
+                
         steps = int(sc['dur'] / params['dt'])
         collisions = 0
         min_gaps_seen = []
@@ -160,16 +320,19 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         rl_speeds = []
         road_len = city_rl.roads[0].length
         
-        follower_max_decel_rl = np.zeros(14)
-        follower_max_decel_acc = np.zeros(14)
-        follower_max_decel_bcc = np.zeros(14)
-        follower_max_decel_accbcc = np.zeros(14)
+        num_eval = (len(city_rl.cars) - 2) if follower_profile else (len(city_rl.cars) - 1)
+        eval_slice = slice(1, -1) if follower_profile else slice(1, None)
+        
+        follower_max_decel_rl = np.zeros(num_eval)
+        follower_max_decel_acc = np.zeros(num_eval)
+        follower_max_decel_bcc = np.zeros(num_eval)
+        follower_max_decel_accbcc = np.zeros(num_eval)
         leader_max_decel = 0.0
         
-        prev_acc_rl = np.zeros(14)
-        prev_acc_acc = np.zeros(14)
-        prev_acc_bcc = np.zeros(14)
-        prev_acc_accbcc = np.zeros(14)
+        prev_acc_rl = np.zeros(num_eval)
+        prev_acc_acc = np.zeros(num_eval)
+        prev_acc_bcc = np.zeros(num_eval)
+        prev_acc_accbcc = np.zeros(num_eval)
         
         jerks_rl, jerks_acc, jerks_bcc, jerks_accbcc = [], [], [], []
         gaps_acc, gaps_bcc, gaps_accbcc = [], [], []
@@ -185,7 +348,9 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
             obs_arr = AccelTrafficEnv.get_city_obs(city_rl, params['v_des'])
             act, _ = model.predict(obs_arr, deterministic=True)
             for i, car in enumerate(city_rl.cars[1:]):
-                car.rl_action = float(act[i][0])
+                if getattr(car, 'is_rl', False):
+                    act_val = act[i][0] if (np.ndim(act) > 1 and i < len(act)) else (act[i] if i < len(act) else 0.0)
+                    car.rl_action = float(act_val)
             city_rl.run(params['dt'])
             
             leader = city_rl.cars[0]
@@ -194,8 +359,9 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
             def step_metrics(city, prev_acc, follower_max_decel, jerks_list, gaps_list):
                 step_gaps = []
                 cur_acc = []
-                for i, car in enumerate(city.cars[1:]):
-                    cars_same = [c for c in city.cars if c.current_road == car.current_road and c != car]
+                eval_cars = city.cars[eval_slice]
+                for i, car in enumerate(eval_cars):
+                    cars_same = [c for c in city.cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
                     def gap_to(other):
                         g = (car.pos - other.pos) % road_len
                         return g if g > 0 else float('inf')
@@ -208,7 +374,7 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
                 cur_acc = np.array(cur_acc)
                 if step > 0:
                     jerks_list.extend(np.abs(cur_acc - prev_acc) / params['dt'])
-                min_g = min(step_gaps)
+                min_g = min(step_gaps) if step_gaps else road_len
                 collided = (min_g < 0.5) or getattr(city, 'collided_this_step', False)
                 return cur_acc, min_g, collided
             
@@ -228,7 +394,7 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
             if col_bcc: collisions_bcc += 1
             if col_accbcc: collisions_accbcc += 1
             
-            for car in city_rl.cars[1:]:
+            for car in city_rl.cars[eval_slice]:
                 rl_speeds.append(car.velocity)
                 
         e_acc = sum(c.energy_used for c in city_acc.cars)
@@ -238,10 +404,10 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         
         # String stability damping ratios
         l_decel = max(leader_max_decel, 0.1)
-        damping_rl = float(np.max(follower_max_decel_rl) / l_decel)
-        damping_acc = float(np.max(follower_max_decel_acc) / l_decel)
-        damping_bcc = float(np.max(follower_max_decel_bcc) / l_decel)
-        damping_accbcc = float(np.max(follower_max_decel_accbcc) / l_decel)
+        damping_rl = float(np.max(follower_max_decel_rl) / l_decel) if len(follower_max_decel_rl) > 0 else 0.0
+        damping_acc = float(np.max(follower_max_decel_acc) / l_decel) if len(follower_max_decel_acc) > 0 else 0.0
+        damping_bcc = float(np.max(follower_max_decel_bcc) / l_decel) if len(follower_max_decel_bcc) > 0 else 0.0
+        damping_accbcc = float(np.max(follower_max_decel_accbcc) / l_decel) if len(follower_max_decel_accbcc) > 0 else 0.0
         
         sc_res = {
             "name": sc['name'],

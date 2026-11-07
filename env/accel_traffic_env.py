@@ -409,7 +409,9 @@ class AccelTrafficEnv(VecEnv):
         MAX_RADAR_RANGE = 70.0  # Max realistic radar sensing range in meters
         
         for obs_idx, car in enumerate(cars[1:]):
-            cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car]
+            if getattr(car, 'has_exited', False):
+                continue
+            cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
             
             def gap_to(other):
                 gap = (car.pos - other.pos) % road_length
@@ -448,7 +450,7 @@ class AccelTrafficEnv(VecEnv):
             
             # Bilateral Rear Car Sensing:
             desired_back_gap = min_dis + (back_car.velocity if back_car else ego_vel) * reaction_time
-            if back_car and back_car != lead_car:
+            if back_car and back_car != lead_car and not getattr(back_car, 'has_exited', False):
                 back_gap_raw = (back_car.pos - car.pos - car.length) % road_length
                 if back_gap_raw <= MAX_RADAR_RANGE:
                     back_gap = back_gap_raw

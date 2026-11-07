@@ -25,7 +25,7 @@ from simulation.config import PROJECT_ROOT, MODELS_DIR, resolve_model_path
 INTUITIVENESS_CRITERIA_CONFIG = {
     'zero_collisions': {
         'title': 'Zero Collisions',
-        'desc': 'Total collision steps across all 7 benchmark scenarios must be 0',
+        'desc': 'Total collision steps across all benchmark scenarios must be 0',
         'eval': lambda rl, classical, idm: rl.get('raw', {}).get('collisions', 999) == 0,
         'format_val': lambda rl, overall: f"{rl.get('raw', {}).get('collisions', 0)} collisions",
         'target': '0 collisions',
@@ -622,7 +622,7 @@ class RLControlWindow(ControlWindow):
 
         tk.Label(
             table_card,
-            text="7-Scenario Comprehensive Benchmark Results",
+            text="12-Scenario Comprehensive Benchmark Results",
             fg="#e2e8f0",
             bg="#111827",
             font=("Segoe UI", 10, "bold")
@@ -761,7 +761,7 @@ class RLControlWindow(ControlWindow):
         self.btn_run_eval.config(state="disabled", text="⏳ Running Evaluation...")
         if hasattr(self, 'status_bar') and self.status_bar:
             self.status_bar.config(
-                text="Running full 7-scenario Driver Intuitiveness evaluation suite in background...",
+                text="Running full 12-scenario Driver Intuitiveness evaluation suite in background...",
                 fg="#38bdf8"
             )
 

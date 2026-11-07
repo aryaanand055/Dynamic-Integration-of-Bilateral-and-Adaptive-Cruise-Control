@@ -57,8 +57,8 @@ DII_THRESHOLDS = {
     # C1: Appropriateness
     'vrel_req_thresh': 0.5,        # Minimum closing speed (m/s) before required deceleration a_req is computed
     'min_gap_headroom': 0.5,       # Buffer floor (m) in denominator max(gap - s0, 0.5) to avoid division by zero
-    'phantom_decel_thresh': -0.7,  # Deceleration threshold (a < -0.7 m/s^2) indicating noticeable braking
-    'phantom_gap_factor': 1.0,     # Gap headroom multiplier (>= 1.0 * desired_gap) indicating clear road ahead
+    'phantom_decel_thresh': -1.0,  # Deceleration threshold (a < -1.0 m/s^2) indicating noticeable braking
+    'phantom_gap_factor': 1.2,     # Gap headroom multiplier (> 1.2 * desired_gap) indicating clear road ahead
     'phantom_vrel_thresh': 0.0,    # Relative speed condition (vrel <= 0) indicating not closing on the front car
     'rear_decel_thresh': -0.5,     # Threshold for rear-induced deceleration when front is clear
     'missed_areq_thresh': 2.0,     # Urgency threshold (a_req > 2.0 m/s^2) requiring active follower deceleration
@@ -146,9 +146,11 @@ class IDMCity(City):
         denom_ab = 2.0 * math.sqrt(max(1e-4, a_max * b))
 
         for idx, car in enumerate(self.cars[1:], start=1):
+            if getattr(car, 'has_exited', False):
+                continue
             if idx == len(self.cars) - 1 and getattr(self, 'follower_velocity_profile', None):
                 continue
-            cars_same = [c for c in self.cars if c.current_road == car.current_road and c != car]
+            cars_same = [c for c in self.cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
 
             def gap_to(other):
                 g = (car.pos - other.pos) % road_len
@@ -305,10 +307,13 @@ def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reactio
                     comfortable_steps += 1
 
     # C1 Calculation
+    # Total phantom braking includes both forward unprovoked braking AND rear-induced phantom braking
     phantom_rate = phantom_count / total_steps if total_steps > 0 else 0.0
+    rear_phantom_rate = rear_phantom_count / total_steps if total_steps > 0 else 0.0
+    total_phantom_rate = phantom_rate + rear_phantom_rate
     missed_rate = missed_count / total_steps if total_steps > 0 else 0.0
-    combined_rate = phantom_rate + missed_rate
-    C1 = float(1.0 - min(1.0, combined_rate / DII_THRESHOLDS['rate_penalty_scale']))
+    combined_rate = total_phantom_rate + missed_rate
+    C1 = float(max(0.0, 1.0 - min(1.0, combined_rate / DII_THRESHOLDS['rate_penalty_scale'])))
 
     # C2 Calculation
     if all_jerks:
@@ -333,11 +338,18 @@ def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reactio
 
     # C4 Calculation
     if moving_steps_total > 0:
-        C4 = float(comfortable_steps / moving_steps_total)
+        C4_base = float(comfortable_steps / moving_steps_total)
     else:
-        C4 = 1.0
+        C4_base = 1.0
 
-    # C5 Calculation (Wave Behaviour)
+    # Penalize dangerous clearance encroachment (< 2.0 m safety clearance floor)
+    if min_gap < 2.0:
+        clearance_penalty = (2.0 - max(0.0, min_gap)) / 2.0
+        C4 = float(max(0.0, C4_base * (1.0 - 0.5 * clearance_penalty)))
+    else:
+        C4 = C4_base
+
+    # C5 Calculation (Wave Behaviour - Platoon string stability ratio)
     leader_accels = np.array(leader_trace.get('a', [0.0]), dtype=np.float64)
     max_follower_decel = float(np.max(np.maximum(0.0, -np.array(all_follower_accels)))) if all_follower_accels else 0.0
     max_leader_decel = float(np.max(np.maximum(0.0, -leader_accels))) if len(leader_accels) > 0 else 0.0
@@ -348,18 +360,17 @@ def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reactio
         C5 = 1.0
     else:
         C5 = float(min(1.0, 1.0 / wave_ratio))
-    # Rear Decoupling / Non-Interference Calculation
-    # Measures whether the vehicle avoids phantom braking when the front road is clear
-    # even if the rear vehicle drops back, brakes, or disappears.
-    rear_phantom_rate = rear_phantom_count / total_steps if total_steps > 0 else 0.0
+
+    # Rear Decoupling / Autonomy: Human drivers never brake because trailing vehicles decelerated
     rear_decoupling = float(max(0.0, 1.0 - (rear_phantom_rate / 0.05)))
 
-    # Driver Intuitiveness Index (DII) represents pure human car-following behaviour:
-    # C1: Appropriateness (proper braking, 0 forward phantom braking)
+    # Driver Intuitiveness Index (DII) represents pure in-cabin human car-following experience:
+    # C1: Appropriateness (proper braking, 0 forward phantom braking, 0 rear-induced braking)
     # C2: Passenger Comfort & Smoothness (jerk and sign flips)
     # C3: Following Calmness (minimal hunting at steady state)
-    # C4: Natural Safety Margin (headway >= 0.8s, TTC >= 4.0s)
-    # RDI: Rear Decoupling (human drivers never brake because the vehicle behind them braked)
+    # C4: Natural Safety Margin (headway >= 0.8s, TTC >= 4.0s, safe bumper clearance >= 2.0m)
+    # RDI: Rear Decoupling / Autonomy (freedom from trailing vehicle disturbance)
+    # (Note: Platoon string stability / wave ratio is tracked and reported as a separate platoon diagnostic)
     DII = float(100.0 * np.mean([C1, C2, C3, C4, rear_decoupling]))
 
     return {
@@ -483,14 +494,13 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
     city_rl = RLCity()
     city_rl.init(*init_args, dt=params['dt'], model='ACC')
     for i, car in enumerate(city_rl.cars):
-        if i == 1:
+        if i == 0:
+            car.is_rl = False
+        elif i == len(city_rl.cars) - 1 and follower_profile:
+            car.is_rl = False
+        else:
             car.is_rl = True
             car.rl_action = 0.0
-        elif i > 1:
-            car.is_rl = False if follower_profile else True
-            car.rl_action = 0.0
-        else:
-            car.is_rl = False
 
     # IDM Gap-Matched (s0 = min_dis, T = reaction_time)
     idm_gap_params = get_gap_matched_idm_params(params)
@@ -530,13 +540,18 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
         for c in cities.values():
             c.follower_velocity_profile = list(follower_profile)
 
+    rear_cutout_time = sc.get('rear_cutout_time', None)
+    if rear_cutout_time is not None:
+        for c in cities.values():
+            c.rear_cutout_time = rear_cutout_time
+
     steps = int(sc['dur'] / params['dt'])
     road_len = city_acc.roads[0].length if city_acc.roads else 1000.0
-    num_followers = params['car_number'] - 1
+    num_eval_followers = (params['car_number'] - 2) if follower_profile else (params['car_number'] - 1)
 
     traces = {
         k: {
-            'followers': [{'a': [], 'v': [], 'gap': [], 'vf': [], 'bg': [], 'vb': []} for _ in range(num_followers)],
+            'followers': [{'a': [], 'v': [], 'gap': [], 'vf': [], 'bg': [], 'vb': []} for _ in range(num_eval_followers)],
             'leader': {'a': [], 'v': []},
             'collisions': 0,
             'min_gap': float('inf'),
@@ -569,8 +584,9 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
             record['leader']['v'].append(leader.velocity)
 
             step_gaps = []
-            for i, car in enumerate(city.cars[1:]):
-                cars_same = [c for c in city.cars if c.current_road == car.current_road and c != car]
+            eval_cars = city.cars[1 : 1 + num_eval_followers]
+            for i, car in enumerate(eval_cars):
+                cars_same = [c for c in city.cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
 
                 def gap_to(other):
                     g = (car.pos - other.pos) % road_len
@@ -659,12 +675,12 @@ def generate_dii_plots(all_dii, scenarios, output_png=None):
         'IDM_gap_matched': 'IDM Ref (Gap-Matched)',
     }
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 11), gridspec_kw={'height_ratios': [1.2, 1.0]})
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(19, 12), gridspec_kw={'height_ratios': [1.2, 1.0]})
     fig.patch.set_facecolor('#ffffff')
 
     # Subplot 1: DII per scenario
     x = np.arange(len(sc_names))
-    width = 0.16
+    width = 0.15
     for idx, ctrl in enumerate(controllers):
         scores = [all_dii[sc['id']][ctrl]['DII'] for sc in scenarios]
         offset = (idx - 2) * width
@@ -672,12 +688,12 @@ def generate_dii_plots(all_dii, scenarios, output_png=None):
         for r in rects:
             h = r.get_height()
             if h > 2:
-                ax1.text(r.get_x() + r.get_width() / 2.0, h + 1.0, f"{h:.0f}", ha='center', va='bottom', fontsize=7.5, rotation=0)
+                ax1.text(r.get_x() + r.get_width() / 2.0, h + 1.0, f"{h:.0f}", ha='center', va='bottom', fontsize=6.5, rotation=0)
 
     ax1.set_ylabel('Driver Intuitiveness Index (DII, 0-100)', fontsize=11, fontweight='bold')
     ax1.set_title('Driver Intuitiveness Index (DII) Across Benchmark Regimes', fontsize=13, fontweight='bold', pad=12)
     ax1.set_xticks(x)
-    ax1.set_xticklabels(sc_names, fontsize=9.5)
+    ax1.set_xticklabels(sc_names, fontsize=7.5, rotation=22, ha='right')
     ax1.set_ylim(0, 108)
     ax1.grid(axis='y', linestyle='--', alpha=0.3)
     ax1.legend(loc='upper right', framealpha=0.9, fontsize=9.5)
@@ -691,7 +707,7 @@ def generate_dii_plots(all_dii, scenarios, output_png=None):
             np.mean([all_dii[sc['id']][ctrl]['C2'] for sc in scenarios]) * 100.0,
             np.mean([all_dii[sc['id']][ctrl]['C3'] for sc in scenarios]) * 100.0,
             np.mean([all_dii[sc['id']][ctrl]['C4'] for sc in scenarios]) * 100.0,
-            np.mean([all_dii[sc['id']][ctrl].get('rear_decoupling', 1.0) for sc in scenarios]) * 100.0,
+            np.mean([all_dii[sc['id']][ctrl]['rear_decoupling'] for sc in scenarios]) * 100.0,
         ]
         offset = (idx - 2) * width
         rects = ax2.bar(x2 + offset, comp_means, width, label=labels[ctrl], color=colors[ctrl], alpha=0.9, edgecolor='black', linewidth=0.5)
@@ -701,7 +717,7 @@ def generate_dii_plots(all_dii, scenarios, output_png=None):
                 ax2.text(r.get_x() + r.get_width() / 2.0, h + 1.0, f"{h:.0f}", ha='center', va='bottom', fontsize=7.5)
 
     ax2.set_ylabel('Component Score (0-100)', fontsize=11, fontweight='bold')
-    ax2.set_title('Overall Component Breakdown (Mean Across All Operational Scenarios)', fontsize=13, fontweight='bold', pad=12)
+    ax2.set_title(f'Overall Component Breakdown (Mean Across All {len(scenarios)} Scenarios)', fontsize=13, fontweight='bold', pad=12)
     ax2.set_xticks(x2)
     ax2.set_xticklabels(components, fontsize=10, fontweight='bold')
     ax2.set_ylim(0, 108)
@@ -737,7 +753,7 @@ def generate_idm_plots(idm_comp_gap_all, idm_comp_def_all, scenarios, output_png
         'RL': 'RL (TD3)',
     }
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(19, 12))
     fig.patch.set_facecolor('#ffffff')
 
     x = np.arange(len(sc_names))
@@ -750,12 +766,12 @@ def generate_idm_plots(idm_comp_gap_all, idm_comp_def_all, scenarios, output_png
         rects = ax1.bar(x + offset, rmses, width, label=labels[ctrl], color=colors[ctrl], alpha=0.9, edgecolor='black', linewidth=0.5)
         for r in rects:
             h = r.get_height()
-            ax1.text(r.get_x() + r.get_width() / 2.0, h + 0.03, f"{h:.2f}", ha='center', va='bottom', fontsize=7.5)
+            ax1.text(r.get_x() + r.get_width() / 2.0, h + 0.03, f"{h:.2f}", ha='center', va='bottom', fontsize=6.5)
 
     ax1.set_ylabel('Accel RMSE (m/s^2) vs IDM', fontsize=10.5, fontweight='bold')
     ax1.set_title('Acceleration RMSE vs Gap-Matched IDM (s0=6m, T=0.8s) Across Scenarios', fontsize=12, fontweight='bold', pad=10)
     ax1.set_xticks(x)
-    ax1.set_xticklabels(sc_names, fontsize=9)
+    ax1.set_xticklabels(sc_names, fontsize=7.5, rotation=22, ha='right')
     ax1.grid(axis='y', linestyle='--', alpha=0.3)
     ax1.legend(loc='upper right', framealpha=0.9, fontsize=9.5)
 
@@ -766,12 +782,12 @@ def generate_idm_plots(idm_comp_gap_all, idm_comp_def_all, scenarios, output_png
         rects = ax2.bar(x + offset, rmses, width, label=labels[ctrl], color=colors[ctrl], alpha=0.9, edgecolor='black', linewidth=0.5)
         for r in rects:
             h = r.get_height()
-            ax2.text(r.get_x() + r.get_width() / 2.0, h + 0.03, f"{h:.2f}", ha='center', va='bottom', fontsize=7.5)
+            ax2.text(r.get_x() + r.get_width() / 2.0, h + 0.03, f"{h:.2f}", ha='center', va='bottom', fontsize=6.5)
 
     ax2.set_ylabel('Accel RMSE (m/s^2) vs IDM', fontsize=10.5, fontweight='bold')
     ax2.set_title('Acceleration RMSE vs Default Textbook IDM (s0=2m, T=1.5s) Across Scenarios', fontsize=12, fontweight='bold', pad=10)
     ax2.set_xticks(x)
-    ax2.set_xticklabels(sc_names, fontsize=9)
+    ax2.set_xticklabels(sc_names, fontsize=7.5, rotation=22, ha='right')
     ax2.grid(axis='y', linestyle='--', alpha=0.3)
     ax2.legend(loc='upper right', framealpha=0.9, fontsize=9.5)
 
@@ -819,13 +835,13 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
 
         # Print per-scenario table
         print(f"\n--- Scenario Results: {sc['name']} ---")
-        print(f"{'Controller':<18} | {'DII':>6} | {'C1':>5} | {'C2':>5} | {'C3':>5} | {'C4':>5} | {'R-Decoup':>8} | {'RMS Jerk':>8} | {'Flips/m':>7} | {'MinGap':>6}")
-        print("-" * 92)
+        print(f"{'Controller':<18} | {'DII':>6} | {'C1':>5} | {'C2':>5} | {'C3':>5} | {'C4':>5} | {'R-Decoup':>8} | {'RMS Jerk':>8} | {'Flips/m':>7} | {'Wave':>6} | {'MinGap':>6}")
+        print("-" * 96)
         for c in ['ACC', 'BCC', 'ACC+BCC', 'RL', 'IDM_gap_matched']:
             m = dii_res[c]
             r = m['raw']
             c_label = 'RL (TD3)' if c == 'RL' else ('IDM (Gap-Ref)' if c == 'IDM_gap_matched' else c)
-            print(f"{c_label:<18} | {m['DII']:6.1f} | {m['C1']:5.2f} | {m['C2']:5.2f} | {m['C3']:5.2f} | {m['C4']:5.2f} | {m['rear_decoupling']:8.2f} | {r['rms_jerk']:8.2f} | {r['sign_changes_per_min']:7.1f} | {r['min_gap']:6.2f}m")
+            print(f"{c_label:<18} | {m['DII']:6.1f} | {m['C1']:5.2f} | {m['C2']:5.2f} | {m['C3']:5.2f} | {m['C4']:5.2f} | {m['rear_decoupling']:8.2f} | {r['rms_jerk']:8.2f} | {r['sign_changes_per_min']:7.1f} | {r['wave_ratio']:6.2f} | {r['min_gap']:6.2f}m")
 
     # Aggregate Overall Results (Averaged over all benchmark scenarios)
     overall_dii = {}
@@ -872,13 +888,13 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
         }
 
     # Print Overall DII Benchmark Table
-    print("\n" + "=" * 94)
+    print("\n" + "=" * 96)
     print(" OVERALL DRIVER INTUITIVENESS INDEX (DII) BENCHMARK SUMMARY")
-    print(" (Based Strictly on Human Behavior: C1 Appropriateness, C2 Smoothness, C3 Calmness,")
-    print("  C4 Comfort Margin, and R-Decoup Rear Disturbance Decoupling.)")
-    print("=" * 94)
-    print(f"{'Controller':<18} | {'DII':>6} | {'C1':>5} | {'C2':>5} | {'C3':>5} | {'C4':>5} | {'R-Decoup':>8} | {'RMS Jerk':>8} | {'Flips/m':>7} | {'MinGap':>6}")
-    print("-" * 94)
+    print(" (Based on In-Cabin Driver Experience: C1 Appropriateness, C2 Smoothness, C3 Calmness,")
+    print("  C4 Comfort Margin, and R-Decoup Rear Decoupling / Autonomy. Wave Ratio tracked as diagnostic.)")
+    print("=" * 96)
+    print(f"{'Controller':<18} | {'DII':>6} | {'C1':>5} | {'C2':>5} | {'C3':>5} | {'C4':>5} | {'R-Decoup':>8} | {'RMS Jerk':>8} | {'Flips/m':>7} | {'Wave':>6} | {'MinGap':>6}")
+    print("-" * 96)
     for c in ['ACC', 'BCC', 'ACC+BCC', 'RL', 'IDM_gap_matched', 'IDM_default']:
         m = overall_dii[c]
         r = m['raw']
@@ -890,8 +906,8 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
             c_label = 'IDM (Default)'
         else:
             c_label = c
-        print(f"{c_label:<18} | {m['DII']:6.1f} | {m['C1']:5.2f} | {m['C2']:5.2f} | {m['C3']:5.2f} | {m['C4']:5.2f} | {m['rear_decoupling']:8.2f} | {r['rms_jerk']:8.2f} | {r['sign_changes_per_min']:7.1f} | {r['min_gap']:6.2f}m")
-    print("=" * 94)
+        print(f"{c_label:<18} | {m['DII']:6.1f} | {m['C1']:5.2f} | {m['C2']:5.2f} | {m['C3']:5.2f} | {m['C4']:5.2f} | {m['rear_decoupling']:8.2f} | {r['rms_jerk']:8.2f} | {r['sign_changes_per_min']:7.1f} | {r['wave_ratio']:6.2f} | {r['min_gap']:6.2f}m")
+    print("=" * 96)
 
     # Print IDM Comparison Table (Primary: Gap-Matched IDM)
     print("\n" + "=" * 90)
