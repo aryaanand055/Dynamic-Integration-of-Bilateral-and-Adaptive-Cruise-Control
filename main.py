@@ -11,6 +11,7 @@ Usage:
     python main.py --analytics    # Run policy rollout analytics
     python main.py --test         # Run platoon stop-and-resume verification tests
     python main.py --rewards      # Generate 24-component reward breakdown log & telemetry
+    python main.py --intuitiveness # Run driver intuitiveness & IDM reference evaluation suite
 """
 import sys
 import argparse
@@ -62,20 +63,37 @@ def run_test_suite(model_path="td3_accel_agent.zip"):
     print("==================================================")
     print(" Running Platoon Verification Test Suite")
     print("==================================================")
+    from tests.test_driver_intuitiveness import run_intuitiveness_tests
     from tests.test_stop_and_resume import test_stop_and_resume
     from tests.test_diagnostics import run_diagnostics
 
-    print("\n[Test 1/2] 15-Car Stop and Resume Verification...")
+    print("\n[Test 1/4] Driver Intuitiveness & IDM Reference Verification...")
+    run_intuitiveness_tests(model_path=model_path)
+
+    print("\n[Test 2/4] 15-Car Stop and Resume Verification...")
     test_stop_and_resume(model_path=model_path)
 
-    print("\n[Test 2/2] Diagnostic Scenario Rollouts...")
+    print("\n[Test 3/4] Diagnostic Scenario Rollouts...")
     run_diagnostics(model_path=model_path)
+
+    print("\n[Test 4/4] GUI Step Loop (60s Headless) & Metric Label Audit...")
+    import unittest
+    suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_gui_intuitiveness')
+    runner = unittest.TextTestRunner(verbosity=1)
+    res = runner.run(suite)
+    if not res.wasSuccessful():
+        raise RuntimeError("GUI Intuitiveness verification tests failed!")
     print("\n>>> All verification tests passed successfully!")
 
 def run_reward_logger(model_path="td3_accel_agent.zip"):
     """Generates reward breakdown log and telemetry CSV."""
     from tools.log_reward_breakdown import generate_reward_breakdown_log
     generate_reward_breakdown_log(model_path=model_path)
+
+def run_intuitiveness(model_path="td3_accel_agent.zip"):
+    """Runs Driver Intuitiveness and IDM human reference evaluation."""
+    from evaluation.driver_intuitiveness import run_driver_intuitiveness_suite
+    run_driver_intuitiveness_suite(model_path=model_path)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -92,6 +110,8 @@ def main():
     group.add_argument("--analytics", action="store_true", help="Run rollout analytics")
     group.add_argument("--test", action="store_true", help="Run verification test suite")
     group.add_argument("--rewards", action="store_true", help="Generate 24-component reward audit log & telemetry CSV")
+    group.add_argument("--intuitiveness", nargs="?", const="td3_accel_agent.zip", default=None,
+                       help="Run driver intuitiveness and IDM human reference evaluation (optional arg: model path)")
 
     parser.add_argument("--model", type=str, default="td3_accel_agent.zip", help="Path or name of target model")
     parser.add_argument("--timesteps", type=int, default=150000, help="Timesteps for training")
@@ -99,7 +119,10 @@ def main():
 
     args = parser.parse_args()
 
-    if args.eval:
+    if args.intuitiveness is not None:
+        target_model = args.intuitiveness if args.intuitiveness != "td3_accel_agent.zip" or args.model == "td3_accel_agent.zip" else args.model
+        run_intuitiveness(model_path=target_model)
+    elif args.eval:
         run_eval(model_path=args.model)
     elif args.train:
         run_train(fine_tune=args.fine_tune, timesteps=args.timesteps)

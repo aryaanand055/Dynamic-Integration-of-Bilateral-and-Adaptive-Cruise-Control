@@ -13,16 +13,6 @@ class RLCity(City):
         for car in self.cars:
             if getattr(car, 'is_rl', False):
                 car._prev_acc = car.acceleration
-                # First-order physical actuator filter (tau ≈ 0.2s, alpha = 0.35)
-                # Eliminates high-frequency policy chattering and jagged acceleration spikes
-                if hasattr(car, 'rl_action'):
-                    raw_cmd = float(car.rl_action)
-                    prev_cmd = getattr(car, '_filtered_cmd', raw_cmd)
-                    if car.velocity <= 1e-4 and raw_cmd > 0.0:
-                        prev_cmd = max(0.0, prev_cmd)
-                    alpha = 0.35
-                    car.rl_action = alpha * raw_cmd + (1.0 - alpha) * prev_cmd
-                    car._filtered_cmd = car.rl_action
 
         # Let the standard heuristic compute accelerations for all cars
         super().driver_decision()
@@ -62,7 +52,6 @@ class RLCity(City):
             car.just_collided = False
             car.just_collided_front = False
             car.just_collided_rear = False
-            car._filtered_cmd = 0.0
             car._prev_acc = 0.0
 
     def handle_collisions(self):
@@ -73,7 +62,8 @@ class RLCity(City):
             car.just_collided_rear = False
 
         road_length = self.roads[0].length if self.roads else 1000
-        sorted_cars = sorted(self.cars, key=lambda c: c.pos)
+        active_cars = [c for c in self.cars if not getattr(c, 'has_exited', False)]
+        sorted_cars = sorted(active_cars, key=lambda c: c.pos)
         for i, car in enumerate(sorted_cars):
             next_car = sorted_cars[(i + 1) % len(sorted_cars)]
             if car == next_car:

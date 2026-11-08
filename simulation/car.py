@@ -27,6 +27,10 @@ class Car:
         self.x_history = []
         self.switch_events = []
         self.target_speed = None
+        self.is_reckless = False
+        self.is_human = False
+        self.driver_type = 'ALGORITHM'
+        self.original_color = color
 
     def get_length(self):
         return self.length
@@ -70,7 +74,7 @@ class Car:
         self.pos -= displacement
 
 
-        road_length = self.current_road.length if hasattr(self, 'current_road') else 1000
+        road_length = self.current_road.length if getattr(self, 'current_road', None) is not None else 1000
         if self.pos < 0:
             self.pos += road_length
         elif self.pos >= road_length:

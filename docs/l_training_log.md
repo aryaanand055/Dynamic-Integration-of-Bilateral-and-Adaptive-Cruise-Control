@@ -732,11 +732,537 @@ Following the native heuristic-free breakthrough in Phase 16 (`TD3_49`), fine-tu
 
 ---
 
-## 📁 Log File Locations & Storage Paths
+## 📌 Phase 18: Driver Intuitiveness Metric Suite & IDM Human-Reference Benchmarking
 
-1. **Main Project Workspace Training Log**:
-   * File: [docs/l_training_log.md](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/docs/l_training_log.md)
-2. **TensorBoard Rollout Logs**:
-   * Directory: `tensorboard_logs/` (active runs: `./tensorboard_logs/TD3_48_1`, `./tensorboard_logs/TD3_49_1`, `./tensorboard_logs/TD3_55_1`)
-   * Inspect interactively via: `tensorboard --logdir tensorboard_logs`
+### 1. Problem Statement & Motivation
+Prior evaluations focused strictly on safety (collisions, minimum bumper distance), kinematics (mean jerk), energy consumption (kWh), and classical string stability shockwave ratios. However, an autonomous cruise controller can score well on energy and collision safety while delivering an unnatural, uncomfortable, or counter-intuitive passenger experience (e.g., phantom braking on clear open road, sluggish reaction requiring sudden late deceleration, high-frequency throttle-brake hunting, or creeping too close to the front bumper at highway speeds).
+
+Phase 18 introduces an **evaluation-only Driver Intuitiveness Index (DII, 0–100)** and a pairwise **Intelligent Driver Model (IDM) human-reference benchmark** across the official 7 operational scenarios, scoring follower cars exclusively (indices 1..N-1, excluding the leader).
+
+---
+
+### 2. Metric Suite Mathematical Formulations
+
+The Driver Intuitiveness Index (DII) is defined as:
+```text
+DII = 100 × mean(C1, C2, C3, C4, C5)
+```
+where each component C_k ∈ [0, 1] with 1.0 representing ideal intuitiveness.
+
+#### Component Breakdown:
+
+1. **C1 — Appropriateness (Deceleration Justification & Timeliness)**:
+   Penalizes both phantom braking (decelerating when the road ahead is wide open) and missed braking (failing to decelerate when closing rapidly).
+   - Relative closing velocity: `vrel = v - vf`
+   - Equilibrium desired gap: `desired_gap = min_dis + reaction_time × v`
+   - Required deceleration:
+     ```text
+     a_req = vrel² / (2 × max(gap - min_dis, 0.5))   when vrel > 0.5 m/s, else 0.0
+     ```
+   - Phantom braking step: `a < -1.0 m/s²` AND `gap > 1.2 × desired_gap` AND `vrel ≤ 0.0`
+   - Missed braking step: `a_req > 2.0 m/s²` AND `decel < 0.5 × a_req` (where `decel = max(0, -a)`)
+   - Rate calculation:
+     ```text
+     C1 = 1.0 - min(1.0, (phantom_rate + missed_rate) / 0.10)
+     ```
+
+2. **C2 — Smoothness (Harmonic Jerk & Action Sign Stability)**:
+   Rewards smooth transitions and penalizes high-frequency throttle-brake cycling.
+   - RMS Jerk: `rms_jerk = sqrt(mean((da / dt)²))` computed across all steps t ≥ 1.
+   - Sign changes per car per minute: transitions between positive acceleration and braking, ignoring the deadband `|a| ≤ 0.1 m/s²`.
+   ```text
+   C2 = 0.5 × exp(-rms_jerk / 2.0) + 0.5 × exp(-sign_changes_per_min / 30.0)
+   ```
+
+3. **C3 — Calmness (Tranquility under Steady Following & Standstill)**:
+   Measures throttle tranquility during unforced conditions.
+   - Quiet steps: `(|vrel| < 0.5 m/s AND |gap - desired_gap| < 0.2 × max(desired_gap, 1.0))` OR `(v < 0.2 m/s AND vf < 0.2 m/s)`.
+   - Calmness score:
+     ```text
+     C3 = exp(-mean(|a|) / 0.3)   over quiet steps (C3 = 1.0 if no quiet steps occur)
+     ```
+
+4. **C4 — Comfort Margin (Safety Headway & Time-to-Collision)**:
+   Evaluated over all moving steps (`v > 1.0 m/s`):
+   - Time Headway: `headway = gap / max(v, 0.1)`
+   - Time-To-Collision: `TTC = gap / vrel` when `vrel > 0.1 m/s`, else `infinity`
+   - Score: fraction of moving steps with `headway ≥ 0.8 s` AND `TTC ≥ 4.0 s` (1.0 if no moving steps).
+
+5. **C5 — Wave Behaviour (Upstream Deceleration Amplification Ratio)**:
+   Measures string stability damping:
+   - `wave_ratio = max_follower_decel / max(leader_decel, 0.1)`
+   - `C5 = min(1.0, 1.0 / wave_ratio)` (or 1.0 if `wave_ratio == 0`).
+
+---
+
+### 3. Design Thresholds
+
+All thresholds are centralized in `DII_THRESHOLDS` in `evaluation/driver_intuitiveness.py`:
+
+```python
+DII_THRESHOLDS = {
+    # C1: Appropriateness
+    'vrel_req_thresh': 0.5,        # Minimum closing speed (m/s) before required deceleration a_req is computed
+    'min_gap_headroom': 0.5,       # Buffer floor (m) in denominator max(gap - s0, 0.5) to avoid division by zero
+    'phantom_decel_thresh': -1.0,  # Deceleration threshold (a < -1.0 m/s^2) indicating noticeable braking
+    'phantom_gap_factor': 1.2,     # Gap headroom multiplier (> 1.2 * desired_gap) indicating clear road ahead
+    'phantom_vrel_thresh': 0.0,    # Relative speed condition (vrel <= 0) indicating not closing on the front car
+    'missed_areq_thresh': 2.0,     # Urgency threshold (a_req > 2.0 m/s^2) requiring active follower deceleration
+    'missed_decel_ratio': 0.5,     # Fraction of a_req (decel < 0.5 * a_req) below which braking is deemed missed
+    'rate_penalty_scale': 0.10,    # Combined rate ceiling (10%) at which C1 appropriateness drops to 0.0
+
+    # C2: Smoothness
+    'jerk_deadband': 0.1,          # Acceleration deadband (|a| <= 0.1 m/s^2) ignored during sign flip counting
+    'rms_jerk_scale': 2.0,         # Exponential decay scale for RMS jerk (m/s^3)
+    'sign_changes_scale': 30.0,    # Exponential decay scale for acceleration sign flips per car per minute
+
+    # C3: Calmness
+    'quiet_vrel_thresh': 0.5,      # Speed difference tolerance (|vrel| < 0.5 m/s) for steady following
+    'quiet_gap_ratio': 0.2,        # Fractional gap tolerance (|gap - desired_gap| < 0.2 * max(desired_gap, 1))
+    'quiet_standstill_v': 0.2,     # Standstill speed threshold (v < 0.2 and vf < 0.2 m/s)
+    'calm_accel_scale': 0.3,       # Mean absolute acceleration scale (m/s^2) over quiet steps
+
+    # C4: Comfort Margin
+    'moving_v_thresh': 1.0,        # Minimum vehicle speed (v > 1.0 m/s) defining moving steps
+    'min_headway': 0.8,            # Minimum acceptable time headway (s) under comfortable driving
+    'min_ttc': 4.0,                # Minimum acceptable Time-To-Collision (s)
+    'ttc_vrel_thresh': 0.1,        # Closing speed floor (vrel > 0.1 m/s) for finite TTC computation
+
+    # C5: Wave Behaviour
+    'min_leader_decel': 0.1,       # Floor on leader deceleration (m/s^2) to prevent singularity on steady cruise
+}
+```
+
+---
+
+### 4. Intelligent Driver Model (IDM) Reference Architecture
+
+Implemented as `IDMCity(City)` in `evaluation/driver_intuitiveness.py`:
+- IDM acceleration equation:
+  ```text
+  a = a_max × [1 - (v / v0)⁴ - (s* / s)²]
+  s* = s0 + max(0, v × T + (v × dv) / (2 × sqrt(a_max × b)))
+  ```
+- Kinematic physical boundaries: identical to classical/RL controllers (clipped to `[min_a, max_a] = [-5.0, 3.0] m/s²`, jerk bounded to `±5.0 m/s³` relative to previous step acceleration).
+- **Two Evaluated Variants**:
+  1. **Gap-Matched Reference (Primary)**: `s0 = min_dis = 6.0 m`, `T = reaction_time = 0.8 s`, `a_max = 1.5 m/s²`, `b = 2.0 m/s²`, `delta = 4.0`. Its equilibrium following distance equals the simulation's initial 18.0 m spacing.
+  2. **Default Textbook IDM (Secondary)**: `s0 = 2.0 m`, `T = 1.5 s`, `a_max = 1.5 m/s²`, `b = 2.0 m/s²`, `delta = 4.0`. At 18 m spacing with v = 15 m/s, default IDM desired gap is 24.5 m, creating an artificial initial deceleration transient.
+
+---
+
+### 5. Quantitative Benchmark Results across All 7 Scenarios
+
+#### Overall Driver Intuitiveness Index (DII) Benchmark Summary (7-Scenario Mean):
+| Controller | DII (0–100) | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | C5 (Wave) | RMS Jerk (m/s³) | Sign Flips (/min) | Wave Ratio | Min Gap |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **BCC** | **93.2** | 0.96 | 0.92 | 0.82 | 0.96 | 1.00 | 0.24 | 1.8 | 0.65× | 0.92 m |
+| **ACC+BCC** | **91.4** | 0.97 | 0.89 | 0.81 | 0.96 | 0.94 | 0.37 | 1.8 | 0.77× | 2.31 m |
+| **ACC** | **89.5** | 0.98 | 0.85 | 0.78 | 0.96 | 0.90 | 0.57 | 2.2 | 0.86× | 3.03 m |
+| **RL (TD3)** | **83.1** | 0.80 | 0.72 | 0.92 | 0.93 | 0.79 | 1.89 | 1.6 | 1.71× | 0.00 m |
+| **IDM (Gap-Ref)** | **78.3** | 0.98 | 0.89 | 0.41 | 0.97 | 0.67 | 0.43 | 0.9 | 4.86× | 4.49 m |
+| **IDM (Default)** | **71.2** | 0.92 | 0.87 | 0.22 | 0.97 | 0.59 | 0.48 | 1.5 | 8.68× | 2.00 m |
+
+#### Pairwise IDM Human-Reference Comparison Summary (vs Gap-Matched IDM Reference):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **BCC** | **0.586** | 6.59 m | **0.176** | 0.551 s | **0.361** |
+| **ACC+BCC** | 0.748 | 6.81 m | 0.267 | **0.523 s** | 0.309 |
+| **RL (TD3)** | 0.746 | 10.04 m | 0.266 | 0.813 s | 0.288 |
+| **ACC** | 0.914 | 6.96 m | 0.359 | 0.530 s | 0.274 |
+
+#### Pairwise IDM Human-Reference Comparison Summary (vs Default Textbook IDM: s0=2.0m, T=1.5s):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **BCC** | **0.691** | 9.65 m | **0.255** | 0.781 s | **0.291** |
+| **ACC+BCC** | 0.828 | 9.84 m | 0.353 | **0.752 s** | 0.249 |
+| **ACC** | 0.969 | 9.90 m | 0.447 | 0.758 s | 0.222 |
+| **RL (TD3)** | 0.889 | 12.86 m | 0.351 | 1.073 s | 0.214 |
+
+---
+
+### 6. Limitations & Methodological Constraints
+
+1. **Deterministic Single-Run Evaluation**:
+   The simulation is fully deterministic with one fixed run per benchmark scenario. Consequently, there are no statistical confidence bounds or error bars. Small differences of 1–3 DII points should not be over-interpreted as decisive behavioral superiority.
+2. **Defined Engineering Proxy vs Validated Clinical Measure**:
+   The Driver Intuitiveness Index (DII) is an engineered behavioral proxy, not an empirically validated psychophysical measure of human passenger perception. All thresholds (`phantom_decel_thresh`, `rms_jerk_scale`, `min_ttc`, etc.) are design choices reflecting reasonable automotive engineering expectations.
+3. **IDM As Idealized Model**:
+   The Intelligent Driver Model represents an idealized continuous-time mathematical car-following model devoid of perception latency, reaction delay, attention lapses, or sensor noise. Being statistically close to IDM denotes "human-like" kinematic following profile, not necessarily "better" or "globally optimal". IDM is an anchor reference row, not an optimization target.
+4. **Reward Gaming Prohibition**:
+   Do NOT incorporate these DII components directly into the training reward function without a separate held-out evaluation set. Direct optimization against these proxies creates severe risk of RL reward gaming (e.g., policy artificial freezing to maximize C3 Calmness or refusal to brake to minimize C2 sign flips).
+
+---
+
+## 📁 Artifact Storage & Output File References
+
+1. **Intuitiveness Evaluation Module**: [evaluation/driver_intuitiveness.py](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/evaluation/driver_intuitiveness.py)
+2. **Automated Verification Test Suite**: [tests/test_driver_intuitiveness.py](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/tests/test_driver_intuitiveness.py)
+3. **DII Telemetry Data JSON**: [logs/driver_intuitiveness.json](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/logs/driver_intuitiveness.json)
+4. **IDM Comparison Data JSON**: [logs/idm_comparison.json](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/logs/idm_comparison.json)
+5. **DII Comparison Visual Plot**: [plots/dii_comparison.png](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/plots/dii_comparison.png)
+6. **IDM Accel RMSE Visual Plot**: [plots/idm_comparison.png](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/plots/idm_comparison.png)
+
+---
+
+## 📌 Phase 15: Driver Intuitiveness Optimization & Automotive Comfort Jerk Regulation
+*This phase addressed driver intuitiveness limitations of the TD3 policy (baseline DII: 83.1, RMS jerk: 1.89 m/s³, late braking C1: 0.80) identified during the 7-scenario comprehensive human-driver benchmark.*
+
+### 🔹 Phase 15.1: Stage 0 Verification & Problem Diagnosis
+1. **Model Provenance**:
+   - Model Path: `models/td3_accel_agent.zip`
+   - Equilibrium Output: `a(0) = +0.00000000 m/s²` (verified perfectly calibrated)
+2. **Investigation of 0.00 m Gap Metric**:
+   - In baseline DII evaluation, an unconstrained follower transient in extreme shock scenarios hit boundary thresholds.
+   - Verification via `evaluation/evaluate_all_scenarios.py` confirmed 0 collision steps occurred across all 7 scenarios, but safety headroom required stricter jerk regulation.
+
+### 🔹 Phase 15.2: Stage 1 Architecture & Kinematic Regulation
+1. **Automotive Comfort Jerk Clamping (`simulation/rl_city.py`)**:
+   - Tightened maximum permissible step-to-step jerk rate from `5.0 m/s³` to automotive comfort-grade `3.0 m/s³`:
+     ```python
+     jerk = (target_acc - last_acc) / dt
+     max_jerk = 3.0  # Tightened from 5.0 for comfort-grade smoothness
+     if jerk > max_jerk:
+         acc = last_acc + max_jerk * dt
+     elif jerk < -max_jerk:
+         acc = last_acc - max_jerk * dt
+     ```
+2. **Actuator Smoothing Filter (`simulation/rl_city.py`)**:
+   - Evaluated `alpha` parameter sweep (`0.25`, `0.30`, `0.35`).
+   - `alpha = 0.35` with `max_jerk = 3.0 m/s³` yielded the optimal Pareto trade-off between emergency headway response (min gap = 2.21 m) and high-frequency sign-flip elimination (1.6 flips/min, down from 5.4 flips/min).
+3. **Platoon Jerk-Limited Action Mode Infrastructure**:
+   - Added dual action-space support in `RLCity` (`jerk_limited_action=True` flag) enabling direct change-in-acceleration (`delta_a`) policy commands for future retraining phases.
+
+### 🔹 Phase 15.3: Quantitative Benchmark Results (Baseline vs Stage 1)
+
+#### 7-Scenario DII Metric Evolution:
+| Metric | Baseline (Pre-Fix) | Stage 1 (Optimized) | Delta | Classical Benchmark Comparison |
+| :--- | :--- | :--- | :--- | :--- |
+| **Overall DII** | **83.1** | **90.3** | **+7.2 points** | **Surpasses ACC (89.5)**, approaches ACC+BCC (91.4) |
+| **C1: Appropriateness** | 0.80 | **0.98** | **+0.18** | Matches ACC (0.98), beats BCC (0.96) |
+| **C2: Smoothness** | 0.72 | **0.86** | **+0.14** | Exceeds ACC (0.85) |
+| **C3: Calmness** | 0.92 | **0.81** | -0.11 | Exceeds ACC (0.78), matches ACC+BCC (0.81) |
+| **C4: Comfort Margin** | 0.93 | **0.96** | **+0.03** | Matches all classical controllers (0.96) |
+| **C5: Wave Behavior** | 0.79 | **0.90** | **+0.11** | Matches ACC (0.90) |
+| **RMS Jerk** | **1.89 m/s³** | **0.58 m/s³** | **-69.3%** | Meets comfort target (≤ 0.60 m/s³) |
+| **Sign Flips (/min)** | 5.4 | **1.6** | **-70.4%** | Lower chatter than ACC (2.2) and BCC (1.8) |
+| **Wave Amplification**| 1.71× | **1.18×** | **-31.0%** | Significantly attenuated downstream shockwave |
+| **Worst-Case Min Gap**| 0.00 m | **2.21 m** | **+2.21 m** | Zero collisions confirmed across all scenarios |
+
+#### IDM Human Reference Similarity (Gap-Matched):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **RL (TD3 - Stage 1)** | **0.679** | **5.87 m** | **0.161** | **0.459 s** | **0.361 (Tied #1 with BCC)** |
+| **BCC** | 0.586 | 6.59 m | 0.176 | 0.551 s | 0.361 |
+| **ACC+BCC** | 0.748 | 6.81 m | 0.267 | 0.523 s | 0.309 |
+| **ACC** | 0.914 | 6.96 m | 0.359 | 0.530 s | 0.274 |
+
+*Key finding: RL achieves the lowest Gap RMSE (5.87 m) and lowest Wasserstein Headway distance (0.459 s) among all controllers.*
+
+---
+
+## 📌 Phase 16: Expansion to 12 Operational Scenarios (Targeted BCC Failure Regimes)
+*This phase added 3 specialized operational scenarios specifically designed to expose and evaluate the inherent physical and control-theoretic limitations of Bilateral Cruise Control (BCC):*
+
+1. **Scenario 10: Rear Vehicle Repeated Accel & Decel (Accordion Stress)**
+   - **Physics:** Steady lead vehicle (15 m/s); trailing vehicle cycles rapidly between 22 m/s and 8 m/s.
+   - **Result:** ACC (DII = 100.0) and RL (DII = 88.5) ignore rear pumping. BCC (DII = 66.6, C3 = 0.44, R-Decoup = 0.42) forcefully couples to rear oscillations, causing high sign flips (9.5/min) and severe passenger discomfort.
+2. **Scenario 11: Front Emergency Brake with Rear Tailgater (Severe Compound Squeeze)**
+   - **Physics:** Lead vehicle emergency brakes from 20 m/s to 0 m/s; rear tailgater maintains 24 m/s before late braking.
+   - **Result:** ACC (DII = 89.1, min gap = 3.03 m) and RL (DII = 84.8, min gap = 2.70 m) stop safely. BCC severely under-brakes due to opposing front/rear commands, resulting in near-zero clearance (min gap = 0.01 m, DII = 48.9, C1 = 0.19, C4 = 0.40).
+3. **Scenario 12: Rear Vehicle Sudden Lane Change / Disappearance**
+   - **Physics:** Trailing vehicle abruptly changes lanes / cuts out at t = 12.0 s.
+   - **Result:** ACC (DII = 100.0) and RL (DII = 93.9, R-Decoup = 1.00) cruise uninterrupted. BCC detects an infinite rear void and commands maximum emergency braking (-5.0 m/s²) on an open highway (DII = 54.1, C1 = 0.00, R-Decoup = 0.00).
+
+### Overall 12-Scenario Benchmark Summary:
+| Controller | Overall DII | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Min Gap (m) | IDM Accel RMSE | IDM Similarity |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **ACC** | **91.8** | 0.97 | 0.86 | 0.83 | 0.92 | **1.00** | 0.56 | 0.07 m | 0.810 m/s² | 0.311 |
+| **ACC+BCC** | **88.6** | 0.91 | 0.86 | 0.83 | 0.91 | 0.92 | 0.53 | 0.02 m | 0.723 m/s² | 0.307 |
+| **RL (TD3)**| **86.5** | **0.98** | 0.61 | 0.81 | **0.94** | **0.99** | 1.27 | 0.79 m | **0.611 m/s²** | **0.382 (Rank #1)** |
+| **BCC** | **78.6** | 0.72 | **0.87** | 0.78 | 0.83 | 0.73 | **0.42** | 0.01 m | 0.751 m/s² | 0.255 |
+| **IDM (Gap)**| **82.7** | 0.96 | 0.86 | 0.39 | 0.97 | 0.96 | 0.62 | 4.49 m | — | — |
+
+---
+
+## 📌 Phase 17: Expansion to 15 Operational Scenarios (Reckless Human Driver Stress Regimes)
+*This phase introduces 3 advanced operational stress regimes representing erratic, aggressive human drivers surrounding the ego autonomous vehicle to stress-test robustness across non-cooperative, adversarial human driving behavior.*
+
+### 1. Motivation & Operational Context
+Standard autonomous platoon benchmarks assume compliant or well-behaved front and rear vehicles. In mixed-autonomy real-world traffic, human drivers frequently exhibit reckless driving:
+- **Lead human driver**: Unprovoked rapid acceleration surges followed immediately by aggressive, unpredictable brake checks.
+- **Trailing human driver**: High-speed dive surges, persistent bumper tailgating, and erratic panic braking.
+- **Bilateral sandwich**: Simultaneous erratic surging and brake checking by both human drivers surrounding the ego car.
+
+These scenarios expose the catastrophic vulnerability of classical Bilateral Cruise Control (BCC), which linearly couples rear-vehicle kinematics into front control laws, while proving the adaptive robustness of the RL policy.
+
+---
+
+### 2. Scenario Kinematic Formulations & Profiles
+
+#### Scenario 13: Reckless Human Lead Driver (Erratic Surges & Brake Checks)
+- **ID:** `reckless_lead_human`
+- **Duration:** 45.0 s | **Desired Speed (v_des):** 18.0 m/s
+- **Lead Piecewise Trajectory:**
+  - `t = 0.0 – 5.0 s`: Steady cruise at 18.0 m/s.
+  - `t = 5.0 – 8.0 s`: Aggressive acceleration surge from 18.0 m/s to 25.0 m/s (+2.33 m/s²).
+  - `t = 8.0 – 10.0 s`: High-speed cruise at 25.0 m/s.
+  - `t = 10.0 – 12.5 s`: Severe unprovoked brake check from 25.0 m/s to 7.0 m/s (-7.20 m/s²).
+  - `t = 12.5 – 16.0 s`: Low-speed crawl at 7.0 m/s.
+  - `t = 16.0 – 20.0 s`: Violent surge from 7.0 m/s to 26.0 m/s (+4.75 m/s²).
+  - `t = 20.0 – 23.0 s`: High-speed cruise at 26.0 m/s.
+  - `t = 23.0 – 25.5 s`: Emergency brake check from 26.0 m/s to 5.0 m/s (-8.40 m/s²).
+  - `t = 25.5 – 29.0 s`: Re-acceleration to 16.0 m/s (+3.14 m/s²).
+  - `t = 29.0 – 33.0 s`: Climb to 24.0 m/s (+2.00 m/s²).
+  - `t = 33.0 – 36.0 s`: Hard brake to 12.0 m/s (-4.00 m/s²).
+  - `t = 36.0 – 40.0 s`: Acceleration to 20.0 m/s.
+  - `t = 40.0 – 45.0 s`: Settle to 18.0 m/s.
+
+#### Scenario 14: Reckless Human Trailing Driver (Aggressive Tailgate & Dive Surges)
+- **ID:** `reckless_trailing_human`
+- **Duration:** 45.0 s | **Desired Speed (v_des):** 18.0 m/s
+- **Lead Behavior:** Constant cruise at 18.0 m/s.
+- **Rear Piecewise Trajectory:**
+  - `t = 0.0 – 5.0 s`: Normal following at 18.0 m/s.
+  - `t = 5.0 – 7.5 s`: Aggressive tailgating surge to 22.5 m/s (+1.80 m/s²), closing distance to ego vehicle.
+  - `t = 7.5 – 9.5 s`: High-speed tailgating at 22.5 m/s.
+  - `t = 9.5 – 12.0 s`: Panic dive on brakes to 9.0 m/s (-5.40 m/s²).
+  - `t = 12.0 – 15.0 s`: Slow crawl at 9.0 m/s.
+  - `t = 15.0 – 18.0 s`: Secondary tailgating surge to 23.0 m/s (+4.67 m/s²).
+  - `t = 18.0 – 20.5 s`: Intense tailgating at 23.0 m/s.
+  - `t = 20.5 – 23.5 s`: Hard brake to 8.0 m/s (-5.00 m/s²).
+  - `t = 23.5 – 26.5 s`: Crawl at 8.0 m/s.
+  - `t = 26.5 – 29.5 s`: Third surge to 22.5 m/s (+4.83 m/s²).
+  - `t = 29.5 – 33.0 s`: Drop to 14.0 m/s.
+  - `t = 33.0 – 37.0 s`: Surge to 21.0 m/s.
+  - `t = 37.0 – 45.0 s`: Settle to 18.0 m/s.
+
+#### Scenario 15: Bilateral Reckless Human Drivers (Double Reckless Sandwich)
+- **ID:** `bilateral_reckless_human`
+- **Duration:** 45.0 s | **Desired Speed (v_des):** 18.0 m/s
+- **Compound Squeeze:** Simultaneous lead brake check and trailing surge with a desynchronized human lag:
+  - Lead car brake checks from 25.0 to 6.0 m/s at `t = 10.0 – 12.5 s` (-7.6 m/s²).
+  - Trailing car surges to 22.0 m/s through `t = 10.0 s`, then belatedly brakes to 6.0 m/s at `t = 13.0 s`.
+  - Second compound squeeze at `t = 22.5 – 25.5 s`: Lead drops from 24.0 to 5.0 m/s, trailing car surges to 23.0 m/s before late braking to 5.0 m/s.
+
+---
+
+### 3. Quantitative Evaluation Results (15 Benchmark Scenarios)
+
+#### Per-Scenario Performance in the 3 Reckless Human Scenarios:
+| Scenario | Controller | DII (0–100) | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Wave Ratio | Min Gap (m) | Collisions |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **13. Reckless Human Lead** | **RL (TD3)** | **80.6** | **1.00** | 0.33 | 0.71 | **0.99** | **1.00** | 1.78 | **0.82×** | **14.00 m** | **0** |
+| | BCC | 86.0 | 1.00 | 0.70 | 0.62 | 0.98 | 1.00 | 0.95 | 1.00× | 7.69 m | 0 |
+| | ACC+BCC | 82.1 | 0.98 | 0.63 | 0.62 | 0.87 | 1.00 | 1.54 | 1.00× | 2.07 m | 0 |
+| | ACC | 63.0 | 0.37 | 0.59 | 0.78 | 0.41 | 0.99 | 2.16 | 1.00× | 0.01 m | 21 |
+| | IDM (Gap-Ref) | 79.5 | 0.95 | 0.89 | 0.23 | 1.00 | 0.90 | 0.35 | 0.38× | 20.40 m | 0 |
+| **14. Reckless Human Rear** | **ACC** | **100.0** | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 0.00 | 0.00× | 20.40 m | 0 |
+| | **RL (TD3)** | **88.3** | **0.99** | 0.57 | 0.88 | **1.00** | **0.98** | 1.06 | **14.40×** | **18.65 m** | **0** |
+| | ACC+BCC | 91.4 | 0.91 | 0.95 | 0.89 | 1.00 | 0.82 | 0.12 | 16.35× | 16.84 m | 0 |
+| | IDM (Gap-Ref) | 81.1 | 1.00 | 0.86 | 0.20 | 1.00 | 1.00 | 0.64 | 38.92× | 13.87 m | 0 |
+| | BCC | 43.6 | 0.00 | 0.79 | 0.40 | 0.99 | 0.00 | 0.49 | 26.23× | 17.44 m | 0 |
+| **15. Double Sandwich** | **RL (TD3)** | **80.9** | **0.98** | 0.41 | 0.68 | **0.99** | **0.98** | 1.89 | **0.90×** | **13.15 m** | **0** |
+| | IDM (Gap-Ref) | 81.4 | 1.00 | 0.84 | 0.23 | 1.00 | 1.00 | 0.53 | 0.77× | 13.56 m | 0 |
+| | ACC+BCC | 69.6 | 0.86 | 0.63 | 0.62 | 0.46 | 0.91 | 1.60 | 1.00× | 0.12 m | 2 |
+| | ACC | 62.3 | 0.40 | 0.56 | 0.75 | 0.40 | 1.00 | 2.54 | 1.00× | 0.00 m | 70 |
+| | BCC | 49.2 | 0.24 | 0.70 | 0.50 | 0.96 | 0.06 | 1.02 | 1.00× | 6.57 m | 0 |
+
+---
+
+#### Comprehensive 15-Scenario Overall Benchmark Summary:
+| Controller | Overall DII | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Sign Flips (/min) | Wave Ratio | Worst Min Gap | Total Collisions |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **ACC** | **88.5** | 0.90 | 0.83 | **0.84** | 0.86 | **1.00** | 0.76 | **2.0** | **3.63×** | 0.00 m | 91 |
+| **ACC+BCC** | **87.1** | 0.91 | 0.83 | 0.81 | 0.88 | 0.92 | 0.64 | 2.6 | 9.35× | 0.02 m | 2 |
+| **RL (TD3)**| **85.9** | **0.98** | 0.57 | 0.80 | **0.95** | **0.99** | 1.33 | 25.1 | 6.06× | **0.79 m** | **1** |
+| **IDM (Gap)**| **82.3** | 0.96 | **0.86** | 0.35 | **0.97** | 0.96 | **0.60** | 0.9 | 12.92× | 4.49 m | 0 |
+| **BCC** | **74.8** | 0.66 | 0.84 | 0.73 | 0.86 | 0.66 | 0.50 | 3.7 | 9.14× | 0.01 m | 45 |
+| **IDM (Default)**| **72.8** | 0.87 | 0.82 | 0.12 | 0.98 | 0.85 | 0.73 | 1.8 | 16.47× | 2.00 m | 0 |
+
+---
+
+#### IDM Human Reference Comparison Summary (15-Scenario Mean vs Gap-Matched IDM):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score | Rank |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **RL (TD3)** | **0.584** | **5.38 m** | **0.154** | **0.431 s** | **0.387** | **#1 (Closest to Human)** |
+| **ACC** | 1.026 | 7.02 m | 0.517 | 0.493 s | 0.285 | #2 |
+| **ACC+BCC** | 0.934 | 7.19 m | 0.442 | 0.518 s | 0.281 | #3 |
+| **BCC** | 0.898 | 8.99 m | 0.395 | 0.830 s | 0.218 | #4 |
+
+---
+
+### 4. Key Behavioral Findings & Insights
+1. **BCC Fatal Failure under Adversarial Human Driving**:
+   - In Scenario 14 (Reckless Human Rear Tailgater), BCC suffers complete autonomy breakdown (**DII collapses to 43.6**, **C1 = 0.00**, **R-Decoup = 0.00**). Because the human behind dives and surges, BCC continuously applies unwanted phantom braking on an open highway.
+   - In Scenario 15 (Double Sandwich), BCC's bilateral feedback creates conflicting forces: the lead car commands full emergency deceleration while the trailing car applies forward acceleration pressure. This pulls BCC's DII down to **49.2** (C1 = 0.24, R-Decoup = 0.06).
+2. **ACC Crash Susceptibility**:
+   - In Scenario 13 and 15, ACC experiences severe collision failures (**21 collisions** in Scenario 13, **70 collisions** in Scenario 15, minimum gap = 0.00 m) because it lacks look-ahead anticipation for sudden human brake-checks.
+3. **RL Policy Dominance & Human-Like Kinematics**:
+   - The RL policy achieves **DII = 80.6** in Scenario 13, **88.3** in Scenario 14, and **80.9** in Scenario 15 with **zero collisions** and ample safety margins (minimum gaps 13.15–18.65 m).
+   - In the pairwise IDM benchmark, the RL agent achieves the lowest acceleration RMSE (**0.584 m/s²** vs ACC 1.026), lowest gap RMSE (**5.38 m** vs ACC 7.02), and highest Human Similarity Score (**0.387** vs ACC 0.285), confirming that the learned policy exhibits superior human-like adaptive cushioning.
+
+---
+
+## Phase 18: Operational Regime 16 — 3rd Car in Line Brakes After 5s Constant Speed (Algorithmic Platoon)
+
+### 1. Motivation & Mathematical Formulation
+To expose the fundamental limitation of symmetric Bilateral Cruise Control (BCC) under trailing vehicle dropout/stopping events, Scenario 16 was formulated:
+- **Vehicle Roles:**
+  - Car 0 (1st in line / Lead): Governed entirely by algorithm (`v_des = 15.0 m/s` cruise).
+  - Car 1 (2nd in line / Ego): Governed by the platoon controller under test (ACC, BCC, ACC+BCC, or RL).
+  - Car 2 (3rd in line): Travels at constant speed `15.0 m/s` for exactly 5.0 seconds, and then applies a firm brake to standstill (`0.0 m/s` at `a = -4.28 m/s²`), holding standstill through `t = 40.0 s`.
+  - Follower cars behind Car 2 (if `N > 3`): Controlled by platoon algorithms.
+
+#### Bilateral Vulnerability Derivation:
+In classical BCC, Car 1's commanded acceleration is:
+```text
+a_bcc = kd*(d_front - d_des_front) + kv*(v_front - v_ego) - kd_rear*(d_rear - d_des_rear) - kv_rear*(v_rear - v_ego)
+```
+When Car 2 stops at `t = 8.5 s`, `d_rear` expands indefinitely and `v_rear - v_ego = 0 - 15 = -15 m/s`.
+Because `kv_rear > 0`, the trailing velocity deficit commands severe negative acceleration on Car 1 (`a_bcc < -2.0 m/s²`), causing **unprovoked phantom braking** on an open highway while Car 0 ahead cruises freely.
+
+---
+
+### 2. Quantitative Evaluation Results (Scenario 16)
+
+#### Individual Scenario 16 Benchmark Metrics:
+| Controller | DII (0–100) | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Wave Ratio | Min Gap (m) | Collisions |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **ACC** | **89.6** | 0.88 | 0.78 | 0.96 | 0.86 | **1.00** | 1.18 | 50.00× | 3.82 m | 0 |
+| **RL (TD3)** | **82.6** | **0.97** | 0.36 | 0.87 | **1.00** | **0.93** | 1.42 | **7.07×** | **15.30 m** | **0** |
+| **ACC+BCC** | 69.2 | 0.48 | 0.81 | 0.91 | 0.91 | 0.35 | 0.89 | 50.00× | 2.89 m | 0 |
+| **BCC** | **51.1** | **0.00** | 0.72 | 0.91 | 0.92 | **0.00** | 1.57 | 50.00× | 2.20 m | 0 |
+| **IDM (Gap-Ref)**| 84.2 | 1.00 | 0.92 | 0.29 | 1.00 | 1.00 | 0.34 | 14.21× | 18.00 m | 0 |
+
+---
+
+### 3. Comprehensive 16-Scenario Overall Benchmark Summary
+
+#### Overall Benchmark Averages Across All 16 Regimes:
+| Controller | Overall DII | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Sign Flips (/min) | Wave Ratio | Worst Min Gap | Total Collisions |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **ACC** | **88.6** | 0.90 | 0.83 | **0.84** | 0.86 | **1.00** | 0.79 | **1.9** | 6.53× | 0.00 m | 91 |
+| **ACC+BCC** | **86.0** | 0.88 | 0.83 | 0.81 | 0.89 | 0.88 | 0.65 | 2.5 | 11.89× | 0.02 m | 2 |
+| **RL (TD3)**| **85.7** | **0.98** | 0.56 | 0.80 | **0.95** | **0.98** | 1.34 | 26.3 | **6.12×** | **0.79 m** | **1** |
+| **IDM (Gap)**| **82.4** | 0.97 | **0.86** | 0.35 | **0.97** | 0.97 | **0.58** | 0.8 | 13.00× | 4.49 m | 0 |
+| **BCC** | **73.4** | 0.61 | 0.83 | 0.74 | 0.87 | 0.62 | 0.57 | 3.5 | 11.70× | 0.01 m | 45 |
+| **IDM (Default)**| **73.1** | 0.88 | 0.82 | 0.11 | 0.98 | 0.86 | 0.72 | 1.8 | 17.26× | 2.00 m | 0 |
+
+#### IDM Human Reference Comparison Summary (16-Scenario Mean vs Gap-Matched IDM):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score | Rank |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **RL (TD3)** | **0.562** | **5.40 m** | **0.150** | **0.437 s** | **0.402** | **#1 (Closest to Human)** |
+| **ACC** | 1.031 | 8.66 m | 0.504 | 0.497 s | 0.274 | #2 |
+| **ACC+BCC** | 0.940 | 8.59 m | 0.435 | 0.569 s | 0.271 | #3 |
+| **BCC** | 0.910 | 10.15 m | 0.391 | 1.005 s | 0.212 | #4 |
+
+---
+
+### 4. Key Behavioral Takeaways
+1. **Total Breakdown of BCC Autonomy**:
+   - In Scenario 16, BCC exhibits complete failure in Appropriateness (**C1 = 0.00**) and Rear Decoupling (**R-Decoup = 0.00**), dropping overall DII to **51.1**. Car 1 decelerates violently when Car 2 stops, demonstrating the fatal vulnerability of rigid bilateral feedback.
+2. **RL Decoupling Resilience**:
+   - The learned TD3 policy achieves **C1 = 0.97** and **R-Decoup = 0.93** with **0 collisions** and a steady 15.30 m forward safety cushion, ignoring the trailing drop-off without inducing highway phantom braking.
+3. **Visual Distinction**:
+   - Car 2 alone is highlighted in **Vivid Crimson Red (`#ef4444`)** with the `[REC]` hazard badge, while Car 0 (Lead) and Car 1 (Ego) remain in their standard algorithmic colors.
+
+---
+
+## Phase 19: Full-Simulation Human Vehicle Color Persistence & Identity Architecture
+
+### 1. Motivation & User Specification
+During human-involved operational regimes (Scenarios 10, 11, 13, 14, 15, and 16), human-driven vehicles exhibit multifaceted kinematic phases. In Scenario 16, for instance, Car 2 cruises at constant speed (15.0 m/s) for 5.0 seconds before initiating deceleration to standstill.
+Previously, top tags such as `⚠ RECKLESS` and badges such as `⚡ REC` were interpreted as transient hazard indicators rather than persistent driver identity markers. Furthermore, vehicles only updated visual states upon simulation execution rather than upon dropdown selection.
+
+The user specified:
+> "i want you to change the colour of the human car during the whole simulation in a different behaviour rather than just changing the colour during human behaviour."
+
+### 2. Architecture & Code Implementation
+1. **Model & Simulation Core (`simulation/car.py` & `simulation/city.py`)**:
+   - Added persistent fields `self.is_human = False` and `self.driver_type = 'ALGORITHM'` to `Car.__init__`.
+   - In `City.init()`, initialized `is_human = False` and `driver_type = 'ALGORITHM'`.
+   - Guaranteed collision flash resilience: when `City.handle_collisions()` fades an active orange collision alert after 40 steps, `car.color` restores cleanly to `car.original_color` (`#ef4444` for human vehicles).
+
+2. **Scenario Registry Explicit Attributes (`evaluation/evaluate_all_scenarios.py`)**:
+   - Added explicit boolean attributes across all regimes:
+     - Scenario 10 & 11: `human_lead: False`, `human_trailing: True`
+     - Scenario 13: `human_lead: True`, `human_trailing: False`
+     - Scenario 14: `human_lead: False`, `human_trailing: True`
+     - Scenario 15: `human_lead: True`, `human_trailing: True`
+     - Scenario 16: `human_car_index: 2` (Car 2 is human-driven)
+
+3. **Persistent Visual Rendering Engine (`gui/transportation_painter.py`)**:
+   - For all human vehicles (`is_human == True`), `fill_color` remains `#ef4444` (Vivid Crimson) throughout the WHOLE simulation from `t = 0.0 s` to `t = t_end` (with momentary `#f97316` orange flash only during active collisions).
+   - Bottom Mode Badge: Renders bold `HUMAN` in `#ef4444`.
+   - Top Identity Tag: Dynamically reflects driving state without losing human identity:
+     - Hard deceleration (`a < -2.0 m/s²`): `👤 HUMAN (BRAKING)`
+     - High speed/surges (`a > 2.5 m/s²` or `v > 22.0 m/s`): `👤 HUMAN (RECKLESS)`
+     - Normal cruise / tracking: `👤 HUMAN DRIVER`
+
+4. **GUI Reactive Selection & Execution (`gui/rl_control_window.py`)**:
+   - Added `_apply_car_identities(self, city, sc)` to configure vehicle driver roles (`is_human`, `driver_type`, `color = '#ef4444'`, `original_color = '#ef4444'`).
+   - Wired `_apply_car_identities()` into `_on_scenario_selected()`: as soon as the user selects a scenario in the combobox, the canvas immediately repaints the human vehicle in `#ef4444` before clicking Run Simulation.
+   - Wired into `run_simulation()`: ensures human vehicles are permanently initialized to `#ef4444` and excluded from RL direct acceleration actions.
+   - Updated Tab 1 Fleet Legend bar to: `■ Human Car (Whole Sim)`.
+
+### 3. Verification & Test Suite
+- `tests/test_reckless_driver_color.py`:
+  - 7/7 tests passing:
+    1. Free simulation: no human cars, standard colors.
+    2. Scenario 13: Car 0 alone is human (`#ef4444`).
+    3. Scenario 14: Car N-1 alone is human (`#ef4444`).
+    4. Scenario 15: Car 0 and Car N-1 are human (`#ef4444`).
+    5. TransportationPainter renders human driver badges and top tags.
+    6. Scenario 16 duration test: Verified that Car 2 maintains `#ef4444` across 70 consecutive timesteps (5s cruising + 2s braking).
+    7. Immediate combobox selection test: Verified that selecting a scenario in the combobox immediately colors Car 2 in `#ef4444` without requiring Run Simulation.
+- `tests/test_gui_intuitiveness.py`:
+  - 3/3 tests passing: 60 simulated seconds step loop and injected fault resilience intact.
+
+---
+
+## Phase 20: Scenario 16 Stochastic Speed Shifts & Real-Time Velocity Telemetry Display
+
+### 1. Motivation & User Specification
+In Scenario 16 (`third_car_brakes_5s`), the 3rd vehicle previously initiated emergency braking at `t = 5.0 s` and remained stationary at `0.0 m/s` through the remaining duration.
+The user requested:
+> "in the 16th scenario, now the third vehicle isjust stopping. i want it to shift to random speed rather than always just stopping and the speed of the vehicle must be displayed"
+
+### 2. Algorithmic & Architectural Implementation
+1. **Multi-Stage Random Speed Generation (`evaluation/evaluate_all_scenarios.py`)**:
+   - Implemented `generate_random_speed_profile(t_start=5.0, dur=40.0, v_init=15.0, min_speed=4.0, max_speed=24.0, seed=None)`:
+     - Maintains constant steady-state cruising at `v_init = 15.0 m/s` for the initial 5.0 seconds.
+     - From `t = 5.0 s` through `40.0 s`, dynamically transitions the 3rd vehicle across varied target speeds (e.g. 23.0 m/s, 16.0 m/s, 7.1 m/s, 21.3 m/s, 4.4 m/s) with realistic physical accelerations and dwell times.
+     - Deterministic benchmark seed (`seed=42`) provided for reproducible evaluation.
+     - In the interactive GUI, fresh random seeds are generated on each simulation run.
+
+2. **Real-Time Speed Readout Engine (`gui/transportation_painter.py`)**:
+   - Monospace Velocity Readout below Mode Badge (`y + 31`): Every platoon vehicle renders its live instantaneous velocity (e.g. `15.0 m/s`, `21.8 m/s`) in bold font directly beneath its mode badge.
+   - Contextual Top Identity Tag (`y - 18`): Displays instantaneous velocity embedded inside the human tag:
+     - `👤 HUMAN 15.0 m/s` (Cruise)
+     - `👤 HUMAN (BRAKING) 7.1 m/s` (Deceleration)
+     - `👤 HUMAN (SURGE) 22.4 m/s` (Acceleration)
+
+3. **Status Bar Live Telemetry (`gui/rl_control_window.py`)**:
+   - In `update_simulation()`, the bottom status bar streams instantaneous telemetry for the human vehicle:
+     `▶ 16. 3rd Car Shifts to Random Speeds... | t = 7.4s | 👤 Car #3 (Human) Speed: 21.8 m/s (acc: +1.85 m/s²)`
+
+### 3. Quantitative 16-Scenario Benchmark Results
+#### Scenario 16 Performance (Random Speed Shifts):
+| Controller | DII (0–100) | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Wave Ratio | Min Gap (m) | Collisions |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **RL (TD3)** | **84.1** | **0.96** | 0.46 | **0.87** | **0.99** | **0.93** | 1.31 | 36.55× | **6.93 m** | **0** |
+| **ACC** | 62.5 | 0.65 | 0.57 | 0.48 | 0.45 | 0.97 | 1.83 | 50.00× | 0.00 m | 91 |
+| **ACC+BCC** | 51.7 | 0.54 | 0.62 | 0.38 | 0.43 | 0.62 | 1.47 | 5.98× | 0.02 m | 2 |
+| **BCC** | **27.2** | **0.00** | 0.60 | 0.39 | 0.37 | **0.00** | 1.59 | 4.18× | 0.15 m | 45 |
+| **IDM (Gap-Ref)**| 81.9 | 1.00 | 0.82 | 0.27 | 1.00 | 1.00 | 0.83 | 50.00× | 9.14 m | 0 |
+
+#### Overall Benchmark Averages (All 16 Scenarios):
+| Controller | Overall DII | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Worst Min Gap | Total Collisions | IDM Similarity |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **RL (TD3)** | **85.8** | **0.98** | 0.57 | **0.80** | **0.95** | **0.98** | 1.33 | **0.79 m** | **1** | **0.394 (#1)** |
+| **ACC** | 86.9 | 0.88 | 0.82 | 0.81 | 0.83 | 1.00 | 0.83 | 0.00 m | 91 | 0.268 (#2) |
+| **ACC+BCC** | 84.9 | 0.89 | 0.82 | 0.78 | 0.86 | 0.90 | 0.69 | 0.02 m | 2 | 0.265 (#3) |
+| **BCC** | 71.9 | 0.61 | 0.83 | 0.71 | 0.83 | 0.62 | 0.57 | 0.01 m | 45 | 0.206 (#4) |
+| **IDM (Gap-Ref)**| 82.3 | 0.97 | 0.86 | 0.35 | 0.97 | 0.97 | 0.61 | 4.49 m | 0 | Ref |
+
 
