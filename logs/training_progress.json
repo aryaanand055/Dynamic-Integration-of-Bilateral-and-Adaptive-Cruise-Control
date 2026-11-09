@@ -1,0 +1,18 @@
+[
+  {
+    "step": 70000,
+    "total_timesteps": 150000,
+    "progress_pct": 46.7,
+    "elapsed_sec": 331.4,
+    "fps": 15,
+    "ep_rew_mean": -15.43
+  },
+  {
+    "step": 140000,
+    "total_timesteps": 150000,
+    "progress_pct": 93.3,
+    "elapsed_sec": 673.2,
+    "fps": 14,
+    "ep_rew_mean": -10.16
+  }
+]

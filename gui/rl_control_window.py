@@ -1500,7 +1500,9 @@ class RLControlWindow(ControlWindow):
 
     def _get_rl_observation(self, city):
         v_des = getattr(city, 'v_des', 15.0)
-        return AccelTrafficEnv.get_city_obs(city, v_des)
+        m = getattr(self, 'model', getattr(self, 'rl_model', None))
+        obs_dim = getattr(getattr(m, 'observation_space', None), 'shape', [6])[0] if m is not None else 6
+        return AccelTrafficEnv.get_city_obs(city, v_des, obs_dim=obs_dim)
 
     def plot_vel_acc_profiles(self):
         dt = getattr(self, 'dt', 0.1)

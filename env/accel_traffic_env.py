@@ -16,18 +16,23 @@ class AccelTrafficEnv(VecEnv):
     - Simulation parameters are domain-randomized each episode for robustness.
     - Observations are normalized to roughly [-1, 1] for stable learning.
     """
-    # Normalization constants for Error-State Dynamic Coordinates
-    # Features: [vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]
-    # At cruise equilibrium (v=v_des, gap=desired_gap, a=0), ALL 7 features are IDENTICALLY 0.0.
-    OBS_MEANS = np.zeros(7, dtype=np.float32)
-    OBS_STDS  = np.array([5.0, 2.0, 10.0, 4.0, 10.0, 4.0, 0.5], dtype=np.float32)
+    # Normalization constants for 6D Error-State Dynamic Coordinates (Canonical Modular FSM)
+    # Features: [ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]
+    # At cruise equilibrium (gap=desired_gap, a=0, rel_v=0), ALL 6 features are IDENTICALLY 0.0.
+    OBS_MEANS = np.zeros(6, dtype=np.float32)
+    OBS_STDS  = np.array([2.0, 10.0, 4.0, 10.0, 4.0, 0.5], dtype=np.float32)
 
-    def __init__(self, num_cars=15, max_steps=1000):
+    # 7D Constants for backwards compatibility with legacy checkpoints
+    OBS_MEANS_7D = np.zeros(7, dtype=np.float32)
+    OBS_STDS_7D  = np.array([5.0, 2.0, 10.0, 4.0, 10.0, 4.0, 0.5], dtype=np.float32)
+
+    def __init__(self, num_cars=15, max_steps=1000, obs_dim=6):
         self.city = RLCity()
         self.dt = 0.1
         self.max_steps = max_steps  # 100 seconds at dt=0.1 by default
         self.current_step = 0
         self.num_cars = num_cars
+        self.obs_dim = obs_dim
         
         # Base simulation parameters (aligned with GUI defaults)
         self.base_params = {
@@ -49,7 +54,7 @@ class AccelTrafficEnv(VecEnv):
         self.lead_profile_time = 0.0
         
         # Spaces for a SINGLE car (action = raw acceleration)
-        obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32)
+        obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32)
         act_space = spaces.Box(
             low=np.float32(-5.0), 
             high=np.float32(5.0), 
@@ -568,19 +573,20 @@ class AccelTrafficEnv(VecEnv):
         return obs, rewards, dones, infos
 
     @classmethod
-    def get_city_obs(cls, city, v_des=15.0):
+    def get_city_obs(cls, city, v_des=15.0, obs_dim=6):
         """
         Build normalized observations for FOLLOWER cars only (indices 1..N-1).
-        Used by environment, GUI, and headless evaluation for 100% mathematical consistency.
-        Features: [vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]
+        Supports canonical 6D modular FSM observation and 7D legacy compatibility.
+        6D Features: [ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]
+        7D Features: [vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]
         """
         cars = city.cars
         if not cars or len(cars) <= 1:
-            return np.zeros((0, 7), dtype=np.float32)
+            return np.zeros((0, obs_dim), dtype=np.float32)
             
         road_length = city.roads[0].length if city.roads else 1000
         num_followers = len(cars) - 1
-        obs_array = np.zeros((num_followers, 7), dtype=np.float32)
+        obs_array = np.zeros((num_followers, obs_dim), dtype=np.float32)
         lead_car = cars[0]
         MAX_RADAR_RANGE = 70.0  # Max realistic radar sensing range in meters
 
@@ -648,29 +654,33 @@ class AccelTrafficEnv(VecEnv):
                 
             back_gap_err = float(np.clip(back_gap - desired_back_gap, -15.0, 15.0))
             
-            # Adaptive Target Velocity: smoothly blends to slower lead vehicle in radar range
-            if front_car and front_vel < v_des:
-                blend_start = effective_desired_gap
-                blend_end = max(effective_desired_gap * 2.5, 25.0)
-                if front_gap <= blend_start:
-                    effective_v_des = front_vel
-                elif front_gap >= blend_end:
-                    effective_v_des = v_des
+            if obs_dim == 7:
+                # 7D Legacy: Adaptive Target Velocity blending
+                if front_car and front_vel < v_des:
+                    blend_start = effective_desired_gap
+                    blend_end = max(effective_desired_gap * 2.5, 25.0)
+                    if front_gap <= blend_start:
+                        effective_v_des = front_vel
+                    elif front_gap >= blend_end:
+                        effective_v_des = v_des
+                    else:
+                        w = (front_gap - blend_start) / (blend_end - blend_start)
+                        effective_v_des = (1.0 - w) * front_vel + w * v_des
                 else:
-                    w = (front_gap - blend_start) / (blend_end - blend_start)
-                    effective_v_des = (1.0 - w) * front_vel + w * v_des
+                    effective_v_des = v_des
+                vel_err = float(np.clip(ego_vel - effective_v_des, -10.0, 10.0))
+                raw = np.array([vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err], dtype=np.float32)
+                obs_array[obs_idx] = (raw - cls.OBS_MEANS_7D) / (cls.OBS_STDS_7D + 1e-8)
             else:
-                effective_v_des = v_des
-            vel_err = float(np.clip(ego_vel - effective_v_des, -10.0, 10.0))
-                
-            raw = np.array([vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err], dtype=np.float32)
-            obs_array[obs_idx] = (raw - cls.OBS_MEANS) / (cls.OBS_STDS + 1e-8)
+                # Canonical 6D Modular FSM observation:
+                raw = np.array([ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err], dtype=np.float32)
+                obs_array[obs_idx] = (raw - cls.OBS_MEANS) / (cls.OBS_STDS + 1e-8)
             
         return obs_array
 
     def _get_obs(self):
         """Build normalized observations using canonical get_city_obs."""
-        return self.get_city_obs(self.city, self.sim_params['v_des'])
+        return self.get_city_obs(self.city, self.sim_params['v_des'], obs_dim=self.obs_dim)
 
     def _calculate_rewards(self, return_breakdown=False):
         """

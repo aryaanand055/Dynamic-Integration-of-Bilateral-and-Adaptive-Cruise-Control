@@ -41,12 +41,13 @@ Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/
 │   ├── car.py             # Physical vehicle dynamics, rolling resistance & aerodynamic drag
 │   ├── road.py            # Circular highway boundary definitions
 │   ├── city.py            # Simulation manager for ACC, BCC, ACC+BCC, and perception delay/noise
+│   ├── supervisor.py      # Finite-State Machine (FSM) supervisor: FREE_CRUISE vs CAR_FOLLOWING
 │   ├── rl_city.py         # Subclass integrating direct RL acceleration actuation (zero heuristics)
 │   └── config.py          # Centralized path discovery and default simulation constants
 │
 ├── env/                    # Reinforcement Learning Gym environment
 │   ├── __init__.py
-│   └── accel_traffic_env.py # Decentralized multi-agent VecEnv with 24 reward function terms
+│   └── accel_traffic_env.py # Decentralized multi-agent VecEnv with 24 reward function terms & SBDR engine
 │
 ├── gui/                    # Graphical user interfaces & live visualization
 │   ├── __init__.py
@@ -57,7 +58,7 @@ Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/
 │
 ├── training/               # Policy training pipelines & callbacks
 │   ├── __init__.py
-│   └── train_td3_accel.py # TD3 training script with analytical equilibrium calibration
+│   └── train_td3_accel.py # TD3 training script with analytical equilibrium calibration & live telemetry
 │
 ├── evaluation/             # Benchmarks, headless simulations, and analytics
 │   ├── __init__.py
@@ -68,8 +69,10 @@ Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/
 │   ├── run_headless.py           # Multi-model 4-way headless comparison runner
 │   └── get_energy.py             # Quantitative kWh traction energy consumption analysis
 │
-├── tests/                  # Verification and diagnostic test suites (29 automated tests)
+├── tests/                  # Verification and diagnostic test suites (42 automated unit tests)
 │   ├── __init__.py
+│   ├── test_supervisory_fsm.py                 # FSM supervisor, hysteresis, open-road cruise & 6D/7D tests
+│   ├── test_scenario_domain_randomization.py   # SBDR 11 archetypes, cut-in/out & tailgater tests
 │   ├── test_cut_in_metrics.py                  # X-factor and cut-in metric unit tests
 │   ├── test_sensor_delay_and_highway_scenario.py # Perception delay, sensor noise & Scenario 11 tests
 │   ├── test_gui_intuitiveness.py               # GUI Treeview, criteria checks & live HUD tiles tests
@@ -163,21 +166,27 @@ All project tasks can be executed via the unified `main.py` entrypoint from the 
 
 ## 5. Key Architectural & Scientific Features
 
-### 5.1 Reinforcement Learning Input (Observation) Space
+### 5.1 Modular Supervisory Architecture & Observation Space
 
-The environment operates as a decentralized multi-agent system where each follower car ($i = 1 \dots N-1$) receives a normalized 7-dimensional observation vector:
+The autonomous agent employs a **Finite-State Supervisory Machine (FSM)** that decouples open-road free cruising from multi-agent car-following:
+- **`FREE_CRUISE`**: Activated when $s_{\text{front}} \ge 70.0\text{ m}$ (or no front vehicle is present). The supervisory controller [`VehicleSupervisor`](file:///simulation/supervisor.py) regulates ego velocity to $v_{\text{des}}$ via a jerk-limited kinematic tracking law ($\pm 5.0\text{ m/s}^3$).
+- **`CAR_FOLLOWING`**: Activated when a predecessor is acquired within radar range ($s_{\text{front}} \le 65.0\text{ m}$, providing a $5.0\text{ m}$ hysteresis buffer to eliminate state chattering). Direct longitudinal acceleration is actuated by the decentralized RL policy.
 
-$$\mathbf{o}_i = \left[ e_v, \, a_{\text{ego}}, \, e_{s,f}, \, \Delta v_f, \, e_{s,b}, \, \Delta v_b, \, \tilde{e}_{s,f} \right]^T$$
+#### Canonical 6D Multi-Agent Observation Space
+By assigning free-cruise velocity tracking to the supervisor, the RL policy operates on a canonical **6-dimensional observation vector** specialized exclusively for platoon string stability, bilateral cushion regulation, and disturbance rejection:
+
+$$\mathbf{o}_i = \left[ a_{\text{ego}}, \, e_{s,f}, \, \Delta v_f, \, e_{s,b}, \, \Delta v_b, \, \tilde{e}_{s,f} \right]^T$$
 
 | # | Feature Name | Notation | Normalization ($\mu, \sigma$) | Clipping Bounds | Physical Meaning / Formulation |
 | :-: | :--- | :---: | :---: | :---: | :--- |
-| **0** | `vel_err` | $e_v$ | $\mu = 0.0, \sigma = 5.0\text{ m/s}$ | $[-10.0, +10.0]\text{ m/s}$ | Error between ego velocity and continuous blended target velocity: $v_{\text{ego}} - v_{\text{target}}$ |
-| **1** | `ego_accel` | $a_{\text{ego}}$ | $\mu = 0.0, \sigma = 2.0\text{ m/s}^2$ | Unbounded | Current longitudinal vehicle acceleration $a_{\text{ego}}$ (IMU feedback) |
-| **2** | `front_gap_err` | $e_{s,f}$ | $\mu = 0.0, \sigma = 10.0\text{ m}$ | $[-15.0, +15.0]\text{ m}$ | Deviation from dynamic desired headway: $s_{\text{front}} - s_{\text{des,eff}}$ |
-| **3** | `front_rel_vel` | $\Delta v_f$ | $\mu = 0.0, \sigma = 4.0\text{ m/s}$ | Unbounded | Front closing rate / relative velocity: $v_{\text{lead}} - v_{\text{ego}}$ |
-| **4** | `back_gap_err` | $e_{s,b}$ | $\mu = 0.0, \sigma = 10.0\text{ m}$ | $[-15.0, +15.0]\text{ m}$ | Bilateral rear headway error: $s_{\text{rear}} - s_{\text{rear,des}}$ |
-| **5** | `back_rel_vel` | $\Delta v_b$ | $\mu = 0.0, \sigma = 4.0\text{ m/s}$ | Unbounded | Rear relative velocity: $v_{\text{rear}} - v_{\text{ego}}$ |
-| **6** | `rel_gap_ratio_err` | $\tilde{e}_{s,f}$ | $\mu = 0.0, \sigma = 0.5$ | $[-1.0, +1.0]$ | Dimensionless headway error ratio: $\frac{s_{\text{front}} - s_{\text{des,eff}}}{\max(s_{\text{des,eff}}, 1.0)}$ |
+| **0** | `ego_accel` | $a_{\text{ego}}$ | $\mu = 0.0, \sigma = 2.0\text{ m/s}^2$ | Unbounded | Current longitudinal vehicle acceleration $a_{\text{ego}}$ (IMU feedback) |
+| **1** | `front_gap_err` | $e_{s,f}$ | $\mu = 0.0, \sigma = 10.0\text{ m}$ | $[-15.0, +15.0]\text{ m}$ | Deviation from dynamic desired headway: $s_{\text{front}} - s_{\text{des,eff}}$ |
+| **2** | `front_rel_vel` | $\Delta v_f$ | $\mu = 0.0, \sigma = 4.0\text{ m/s}$ | Unbounded | Front closing rate / relative velocity: $v_{\text{lead}} - v_{\text{ego}}$ |
+| **3** | `back_gap_err` | $e_{s,b}$ | $\mu = 0.0, \sigma = 10.0\text{ m}$ | $[-15.0, +15.0]\text{ m}$ | Bilateral rear headway error: $s_{\text{rear}} - s_{\text{rear,des}}$ |
+| **4** | `back_rel_vel` | $\Delta v_b$ | $\mu = 0.0, \sigma = 4.0\text{ m/s}$ | Unbounded | Rear relative velocity: $v_{\text{rear}} - v_{\text{ego}}$ |
+| **5** | `rel_gap_ratio_err` | $\tilde{e}_{s,f}$ | $\mu = 0.0, \sigma = 0.5$ | $[-1.0, +1.0]$ | Dimensionless headway error ratio: $\frac{s_{\text{front}} - s_{\text{des,eff}}}{\max(s_{\text{des,eff}}, 1.0)}$ |
+
+*(Note: The environment also maintains seamless backward compatibility with legacy 7-dimensional models containing target speed error $e_v$ via dynamic auto-detection).*
 
 #### Key Observation Coordinate Properties:
 1. **Error-State Dynamic Coordinates**: At steady-state equilibrium cruising ($v = v_{\text{des}}, s_{\text{front}} = s_{\text{des}}, a = 0$), **all 7 features are identically 0.0**. This establishes an analytical zero-equilibrium attractor at the origin, eliminating drift.

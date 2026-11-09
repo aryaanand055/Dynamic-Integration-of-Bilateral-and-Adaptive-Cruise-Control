@@ -665,7 +665,8 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
         city_idm_def.run(params['dt'])
 
         # RL model execution exactly via model.predict(deterministic=True)
-        obs_arr = AccelTrafficEnv.get_city_obs(city_rl, params['v_des'])
+        obs_dim = getattr(getattr(rl_model, 'observation_space', None), 'shape', [6])[0]
+        obs_arr = AccelTrafficEnv.get_city_obs(city_rl, params['v_des'], obs_dim=obs_dim)
         act, _ = rl_model.predict(obs_arr, deterministic=True)
         for i, car in enumerate(city_rl.cars[1:]):
             if getattr(car, 'is_rl', False):

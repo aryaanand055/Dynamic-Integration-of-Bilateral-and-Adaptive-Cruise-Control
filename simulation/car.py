@@ -32,6 +32,9 @@ class Car:
         self.driver_type = 'ALGORITHM'
         self.human_profile_name = None
         self.original_color = color
+        from simulation.supervisor import VehicleSupervisor, FSMState
+        self.supervisor = VehicleSupervisor()
+        self.fsm_state = FSMState.FREE_CRUISE.value
 
     def get_length(self):
         return self.length

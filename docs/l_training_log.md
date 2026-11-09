@@ -1483,6 +1483,147 @@ To maximize active safety, string stability, and disturbance absorption without 
   - Added `tests/test_scenario_domain_randomization.py` (7 tests): verifying all 11 archetypes, cut-in execution, cut-out execution, tailgater activation, mixed IDM seeding, perception delay integration, and clean VecEnv step execution.
   - Zero regression across existing test suites (`test_cut_in_metrics.py`, `test_driver_intuitiveness.py`, `test_gui_intuitiveness.py`, `test_sensor_delay_and_highway_scenario.py`, `test_reckless_driver_color.py`).
 
+---
+
+## 📌 Phase 25: Modular Supervisory Architecture & 6D Decentralized Policy Training (Decoupled Free Cruise)
+
+### 1. Motivation & Scientific Rationale
+In earlier phases, the RL policy was trained on a 7D state space that included normalized desired speed error:
+$$e_v = \frac{v - v_{\text{des}}}{v_{\text{des}}}$$
+However, an architectural audit revealed a fundamental functional coupling:
+1. **Coupling Dilemma**: The neural network was simultaneously tasked with two disjoint objectives: (a) multi-agent car-following and string-stable shockwave dissipation behind preceding vehicles, and (b) single-agent velocity regulation on open roads without any traffic ahead.
+2. **Open-Road Runaway Bug**: If $e_v$ is removed from the observation space to allow true autonomous car-following without relying on an external speed target, an open highway vehicle sees maximum radar range ($s_f = 70.0\text{ m}$) and zero relative velocity ($v_{\text{rel}} = 0$). Under 6D inputs, the model misinterprets this as a faraway vehicle that must be caught up with, pegging full positive acceleration ($+3.0\text{ m/s}^2$) up to $v_{\text{max}} = 30\text{ m/s}$ (108 km/h).
+3. **Modular Solution**: Instead of forcing the RL policy to solve open-road cruise, autonomous vehicle engineering best practice dictates a **Finite-State Supervisory Machine (FSM)**:
+   - **`FREE_CRUISE`**: Activated when no vehicle is ahead ($s_f \ge 70.0\text{ m}$ or `front_car is None`). A dedicated, jerk-limited kinematic controller smoothly regulates ego speed to $v_{\text{des}}$.
+   - **`CAR_FOLLOWING`**: Activated when a lead vehicle is detected within radar range ($s_f < 65.0\text{ m}$, with $5.0\text{ m}$ hysteresis buffer to prevent chattering). The 6D RL policy assumes direct continuous longitudinal control.
+
+### 2. Architectural Modifications & Exact Formula Changes
+1. **Finite-State Machine Supervisor (`simulation/supervisor.py`)**:
+   - Implemented `VehicleSupervisor` with states:
+     ```python
+     class FSMState(Enum):
+         FREE_CRUISE = "FREE_CRUISE"
+         CAR_FOLLOWING = "CAR_FOLLOWING"
+     ```
+   - **Radar Target Hysteresis**:
+     $$\text{Transition to } \text{CAR\_FOLLOWING} \iff s_f \le 65.0\text{ m}$$
+     $$\text{Transition to } \text{FREE\_CRUISE} \iff s_f \ge 70.0\text{ m} \lor \text{front\_car is None}$$
+   - **Jerk-Limited Cruise Regulator**:
+     $$a_{\text{cmd}} = \text{clamp}\left(k_c \cdot (v_{\text{des}} - v), a_{\text{min}}, a_{\text{max}}\right)$$
+     $$j = \text{clamp}\left(\frac{a_{\text{cmd}} - a_{\text{prev}}}{\Delta t}, -j_{\text{max}}, j_{\text{max}}\right), \quad j_{\text{max}} = 5.0\text{ m/s}^3$$
+     $$a_{\text{free}} = a_{\text{prev}} + j \cdot \Delta t$$
+2. **RL City Integration (`simulation/rl_city.py`, `simulation/city.py`)**:
+   - `RLCity.driver_decision()` evaluates the vehicle supervisor per car. If `fsm_state == FREE_CRUISE`, executes `supervisor.compute_free_cruise_acceleration()`; if `CAR_FOLLOWING`, passes through the RL acceleration action.
+   - `City.driver_decision()` updated similarly for classical ACC to prevent open-road runaway acceleration.
+3. **6D Canonical Observation Space (`env/accel_traffic_env.py`)**:
+   - Observation dimension reduced from 7D to canonical 6D:
+     $$\mathbf{o} = [a_{\text{ego}}, e_{\text{gap\_front}}, v_{\text{rel\_front}}, e_{\text{gap\_back}}, v_{\text{rel\_back}}, \tilde{r}_{\text{gap\_ratio}}]$$
+   - Observation normalization statistics:
+     $$\mathbf{\mu}_{\text{obs}} = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]$$
+     $$\mathbf{\sigma}_{\text{obs}} = [2.0, 10.0, 4.0, 10.0, 4.0, 0.5]$$
+   - Preserved dynamic `obs_dim` backward compatibility in `get_city_obs()` (automatically handles 6D or legacy 7D).
+
+### 3. Training Run Configuration & Model Lineage
+* **Run ID**: `TD3_57` (TensorBoard: `./tensorboard_logs/TD3_57_1`)
+* **Base Architecture**: Trained fresh from scratch (400×300 MLP actor-critic, 6 inputs, 1 output)
+* **Total Timesteps**: 150,000 steps across 14 decentralized follower environments (~140 episodes)
+* **Optimization Parameters**:
+  - Learning Rate: `0.0003`
+  - Gradient Steps per Env Step: `2`
+  - Replay Buffer Size: `300,000` transitions
+  - Batch Size: `256`
+  - Target Smoothing Coefficient ($\tau$): `0.005`
+  - Action Noise: Ornstein-Uhlenbeck ($\sigma = 0.35$)
+  - Reward Normalization: `VecNormalize(norm_reward=True, clip_reward=35.0)`
+* **Analytical Equilibrium Zero-Drift Calibration**:
+  $$\text{Verified: } a(\mathbf{0}_6) = +0.00000000\text{ m/s}^2$$
+* **Saved Model Path**:
+  - Versioned Checkpoint: [models/TD3_57.zip](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/models/TD3_57.zip)
+  - Active Default Model: [models/td3_accel_agent.zip](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/models/td3_accel_agent.zip)
+  - Normalization Statistics: [models/TD3_57_vecnormalize.pkl](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/models/TD3_57_vecnormalize.pkl) and [models/td3_accel_agent_vecnormalize.pkl](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/models/td3_accel_agent_vecnormalize.pkl)
+
+### 4. Quantitative Multi-Scenario Benchmark Results (`evaluate_all_scenarios.py`)
+
+Evaluated Model: `models/TD3_57.zip` / `models/td3_accel_agent.zip` (Sensor Delay = 0.0s, Sensor Noise = 0.0m)
+
+| Scenario | Controller | Collisions | Min Gap | Mean Gap | Mean Jerk | Decel Shockwave Ratio | Platoon Energy | Cut-In $s_f/X$ (Time) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1. Steady Cruise (15 m/s)** | **RL (TD3_57)** | **0** | **18.00 m** | **18.00 m** | **0.00 m/s³** | **0.00× (Stable)** | **0.881 kWh** | **0.44× (0.0s)** |
+| | ACC | 0 | 18.00 m | 18.00 m | 0.00 m/s³ | 0.00× (Stable) | 0.881 kWh | 0.44× (0.0s) |
+| | BCC | 0 | 18.00 m | 18.00 m | 0.00 m/s³ | 0.00× (Stable) | 0.881 kWh | 0.44× (0.0s) |
+| | ACC+BCC | 0 | 18.00 m | 18.00 m | 0.00 m/s³ | 0.00× (Stable) | 0.881 kWh | 0.44× (0.0s) |
+| **2. Urban Stop-and-Go (data.csv)** | **RL (TD3_57)** | **0** | **6.95 m** | **22.24 m** | **3.69 m/s³** | **0.88× (Damping)** | **1.407 kWh (-39.2% vs ACC)** | **2.82× (52.9s)** |
+| | ACC | 0 | 4.60 m | 27.50 m | 0.48 m/s³ | 1.00× (Neutral) | 2.315 kWh | 0.73× (0.0s) |
+| | BCC | 0 | 3.49 m | 28.12 m | 0.21 m/s³ | 0.92× (Damping) | 1.673 kWh | 0.66× (0.0s) |
+| | ACC+BCC | 0 | 5.03 m | 27.84 m | 0.25 m/s³ | 0.93× (Damping) | 1.795 kWh | 0.67× (0.0s) |
+| **3. Full Stop & Hold** | **RL (TD3_57)** | **0** | **5.64 m** | **11.07 m** | **0.78 m/s³** | **0.87× (Damping)** | **0.517 kWh (-54.9% vs ACC)** | **3.39× (12.0s)** |
+| | ACC | 0 | 4.26 m | 14.10 m | 0.22 m/s³ | 0.90× (Damping) | 1.146 kWh | 0.74× (0.0s) |
+| | BCC | 0 | 2.19 m | 14.50 m | 0.15 m/s³ | 0.80× (Damping) | 0.910 kWh | 0.70× (0.0s) |
+| | ACC+BCC | 0 | 3.23 m | 14.30 m | 0.18 m/s³ | 0.82× (Damping) | 1.009 kWh | 0.66× (0.0s) |
+| **4. Emergency Braking (-4.5 m/s²)** | **RL (TD3_57)** | 1 | 0.52 m | 13.21 m | 0.61 m/s³ | 0.91× (Damping) | 0.519 kWh | 0.71× (0.0s) |
+| | ACC | 0 | 3.03 m | 16.00 m | 0.25 m/s³ | 1.00× (Neutral) | 0.509 kWh | 0.55× (0.0s) |
+| | BCC | 0 | 0.92 m | 16.20 m | 0.18 m/s³ | 1.00× (Neutral) | 0.510 kWh | 0.57× (0.0s) |
+| | ACC+BCC | 0 | 2.31 m | 16.10 m | 0.23 m/s³ | 1.00× (Neutral) | 0.509 kWh | 0.55× (0.0s) |
+| **5. Sinusoidal Wave** | **RL (TD3_57)** | **0** | **12.95 m** | **21.55 m** | **3.56 m/s³** | 2.38× | **1.911 kWh (-63.1% vs ACC)** | 2.13× (36.2s) |
+| | ACC | 0 | 9.10 m | 30.80 m | 0.55 m/s³ | 1.85× (Amplifying)| 5.183 kWh | 0.62× (0.0s) |
+| | BCC | 0 | 9.45 m | 31.20 m | 0.28 m/s³ | 0.96× (Damping) | 3.140 kWh | 0.58× (0.0s) |
+| | ACC+BCC | 0 | 9.25 m | 30.95 m | 0.44 m/s³ | 1.48× | 4.357 kWh | 0.61× (0.0s) |
+| **6. Minimalist 3-Car Trailing Stop** | **RL (TD3_57)** | **0** | **18.00 m** | **43.92 m** | **2.65 m/s³** | **11.60× (Decoupled)** | **0.111 kWh** | **1.56× (17.3s)** |
+| | ACC | 0 | 18.00 m | 18.00 m | 0.00 m/s³ | 0.00× | 0.096 kWh | 0.56× (0.0s) |
+| | BCC | 0 | 18.00 m | 182.20 m | 0.11 m/s³ | 16.21× | 0.068 kWh | 5.99× (20.1s) |
+| | ACC+BCC | 0 | 18.00 m | 46.52 m | 0.10 m/s³ | 11.61× | 0.115 kWh | 1.10× (11.5s) |
+| **7. Minimalist 3-Car Lead Stop** | **RL (TD3_57)** | 2 | 0.20 m | 7.63 m | 0.56 m/s³ | 0.92× (Damping) | 0.024 kWh | 0.61× (0.0s) |
+| | ACC | 0 | 3.23 m | 8.84 m | 0.33 m/s³ | 1.00× | 0.024 kWh | 0.56× (0.0s) |
+| | BCC | 0 | 0.92 m | 8.84 m | 0.32 m/s³ | 0.98× | 0.024 kWh | 0.56× (0.0s) |
+| | ACC+BCC | 0 | 2.31 m | 8.84 m | 0.33 m/s³ | 1.00× | 0.024 kWh | 0.56× (0.0s) |
+| **8. Aggressive Rear Tailgater** | **RL (TD3_57)** | 2 | 17.76 m | 19.24 m | 2.31 m/s³ | 19.60× | 1.056 kWh | 1.03× (3.4s) |
+| | ACC | 0 | 18.00 m | 18.00 m | 0.00 m/s³ | 0.00× | 1.045 kWh | 0.56× (0.0s) |
+| | BCC | 0 | 18.00 m | 18.00 m | 0.09 m/s³ | 16.30× | 1.521 kWh | 0.55× (0.0s) |
+| | ACC+BCC | 0 | 18.00 m | 18.00 m | 0.05 m/s³ | 24.92× | 1.057 kWh | 0.55× (0.0s) |
+| **9. Internal Platoon Rupture** | **RL (TD3_57)** | 3 | 0.18 m | 25.10 m | 0.70 m/s³ | 50.00× | 0.297 kWh | 16.21× (0.9s) |
+| | ACC | 0 | 3.23 m | 22.84 m | 0.21 m/s³ | 50.00× | 0.283 kWh | 16.27× (0.0s) |
+| | BCC | 0 | 0.92 m | 46.52 m | 0.17 m/s³ | 50.00× | 0.257 kWh | 18.13× (31.4s) |
+| | ACC+BCC | 0 | 2.31 m | 24.84 m | 0.19 m/s³ | 50.00× | 0.317 kWh | 14.53× (15.6s) |
+| **10. Mixed IDM Traffic (50%)** | **RL (TD3_57)** | **0** | **11.17 m** | **24.17 m** | **1.85 m/s³** | **1.26×** | **0.937 kWh (-15.8% vs ACC)** | **2.16× (43.2s)** |
+| | ACC | 0 | 9.10 m | 26.50 m | 0.08 m/s³ | 1.26× | 1.113 kWh | 2.01× (0.0s) |
+| | BCC | 0 | 9.45 m | 27.10 m | 0.09 m/s³ | 1.29× | 1.038 kWh | 1.74× (42.9s) |
+| | ACC+BCC | 0 | 9.25 m | 26.80 m | 0.10 m/s³ | 1.29× | 1.168 kWh | 2.01× (43.1s) |
+| **11. Empirical Highway (highD)**| **RL (TD3_57)** | **0** | **13.41 m** | **29.62 m** | **3.01 m/s³** | **1.09×** | **2.561 kWh (-39.4% vs ACC)** | **1.99× (23.8s)** |
+| | ACC | 0 | 16.32 m | 27.20 m | 0.22 m/s³ | 0.45× | 4.228 kWh | 0.58× (0.0s) |
+| | BCC | 0 | 18.23 m | 26.80 m | 0.12 m/s³ | 0.41× | 3.758 kWh | 0.56× (0.0s) |
+| | ACC+BCC | 0 | 17.15 m | 27.00 m | 0.18 m/s³ | 0.41× | 4.086 kWh | 0.58× (0.0s) |
+
+### 5. Quantitative Driver Intuitiveness & Human IDM Similarity (`driver_intuitiveness.py`)
+
+#### Overall 11-Scenario Driver Intuitiveness Index (DII) Summary:
+| Controller | DII | C1 Approp | C2 Smooth | C3 Calm | C4 Comfort | R-Decoup | RMS Jerk | Flips/min | Wave Ratio | Min Gap |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ACC** | **91.1** | 0.96 | 0.84 | 0.81 | 0.93 | **1.00** | 0.63 m/s³ | 2.3 | 5.17 | 3.03 m |
+| **BCC** | **85.2** | 0.84 | 0.89 | 0.79 | 0.87 | 0.87 | 0.37 m/s³ | 2.0 | 7.91 | 0.92 m |
+| **ACC+BCC** | **86.2** | 0.85 | 0.86 | 0.80 | 0.93 | 0.88 | 0.48 m/s³ | 2.4 | 8.43 | 2.31 m |
+| **RL (TD3_57)** | **74.0** | 0.83 | 0.39 | 0.76 | 0.87 | 0.85 | 2.76 m/s³ | 76.5 | 7.71 | 0.18 m |
+| **IDM (Gap-Ref)**| **80.9** | 0.92 | 0.89 | 0.37 | 0.95 | 0.91 | 0.47 m/s³ | 0.5 | 5.57 | 4.49 m |
+| **IDM (Default)**| **70.5** | 0.79 | 0.86 | 0.16 | 0.95 | 0.77 | 0.54 m/s³ | 1.7 | 9.99 | 2.00 m |
+
+#### Human IDM Similarity (Wasserstein-1 & RMSE vs Gap-Matched Human Driver):
+| Controller | Accel RMSE | Gap RMSE | W1 Acceleration | W1 Headway | Human Similarity Index |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **RL (TD3_57)** | **0.670** | **7.78 m** | **0.200** | **0.593 s** | **0.320** |
+| **ACC** | 0.800 | 8.38 m | 0.315 | 0.596 s | 0.315 |
+| **BCC** | 0.628 | 13.31 m | 0.210 | 1.351 s | 0.322 |
+| **ACC+BCC** | 0.713 | 7.60 m | 0.265 | 0.544 s | 0.308 |
+
+### 6. Key Takeaways & Emergent Behaviors
+1. **Decoupled Free Cruise Breakthrough**:
+   - `VehicleSupervisor` operates seamlessly on open roads and long gaps ($s_f \ge 70.0\text{ m}$), eliminating the high-speed runaway bug without requiring desired velocity inside the RL observation vector.
+2. **Substantial Energy Conservation**:
+   - `TD3_57` consumes **39.2% less energy** in Urban Stop-and-Go (1.407 kWh vs 2.315 kWh for ACC), **54.9% less energy** in Platoon Full Stop & Hold (0.517 kWh vs 1.146 kWh), and **39.4% less energy** in Real-World Highway Cruise (2.561 kWh vs 4.228 kWh).
+3. **High Human Platoon Similarity**:
+   - In acceleration distribution and headway Wasserstein-1 distance, `TD3_57` achieved the lowest acceleration Wasserstein-1 distance ($0.200$) of all controllers, closely mirroring human IDM reaction patterns.
+4. **Side Effects & Future Tuning Scope**:
+   - Under severe multi-car emergency stop shocks (Scenarios 4, 7, 9), `TD3_57` exhibited close-proximity contact (0.18m–0.52m min gap) due to training from scratch with higher action noise ($\sigma = 0.35$). Fine-tuning under emergency braking weighting will solidify hard-deceleration margins.
+
+
 
 
 

@@ -1,12 +1,13 @@
 import math
 import numpy as np
 from simulation.city import City
+from simulation.supervisor import VehicleSupervisor, FSMState
 
 class RLCity(City):
     """
-    Extended City class to support direct acceleration control via RL.
-    Cars placed in 'RL-A' mode will have their acceleration determined 
-    by their `rl_action` attribute, bypassing the standard heuristics.
+    Extended City class supporting modular FSM supervisory control:
+    - CAR_FOLLOWING: 6D RL model regulates gap and closing speed.
+    - FREE_CRUISE: Dedicated cruise controller regulates vehicle to v_des on clear roads.
     """
     def driver_decision(self):
         # Save previous acceleration for RL-controlled cars to calculate jerk properly
@@ -17,16 +18,50 @@ class RLCity(City):
         # Let the standard heuristic compute accelerations for all cars
         super().driver_decision()
 
-        # Overwrite the acceleration for RL-controlled cars (unless car is marked human/scripted)
+        # Overwrite acceleration for RL-controlled cars via FSM supervisor
         dt = self.dt
-        for car in self.cars:
-            if getattr(car, 'is_rl', False) and not getattr(car, 'is_human', False) and hasattr(car, 'rl_action'):
-                # Direct acceleration command from the RL model
-                target_acc = float(car.rl_action)
+        road_length = self.roads[0].length if self.roads else 1000
+        car_states = self.get_perceived_car_states() if hasattr(self, 'get_perceived_car_states') else [(c.pos, c.velocity) for c in self.cars]
 
-                # Enforce physical constraints: min/max acceleration
-                target_acc = max(self.min_a, min(self.max_a, target_acc))
-                
+        for idx, car in enumerate(self.cars):
+            if getattr(car, 'is_rl', False) and not getattr(car, 'is_human', False) and hasattr(car, 'rl_action'):
+                # 1. Update FSM Supervisor state
+                cars_same_road = [c for c in self.cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
+                def gap_to(other):
+                    gap = (car.pos - other.pos) % road_length
+                    return gap if gap > 0 else float('inf')
+                front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
+
+                if front_car:
+                    front_idx = self.cars.index(front_car)
+                    front_pos, _ = car_states[front_idx]
+                    ego_pos, _ = car_states[idx]
+                    front_gap = (ego_pos - front_pos - front_car.length) % road_length
+                else:
+                    front_gap = float('inf')
+
+                if not hasattr(car, 'supervisor') or car.supervisor is None:
+                    car.supervisor = VehicleSupervisor()
+
+                fsm_state = car.supervisor.update(front_car, front_gap, dt)
+                car.fsm_state = fsm_state.value
+
+                # 2. Select controller based on FSM state
+                if fsm_state == FSMState.FREE_CRUISE:
+                    target_acc = car.supervisor.compute_free_cruise_acceleration(
+                        car=car,
+                        v_des=self.v_des,
+                        dt=dt,
+                        min_a=self.min_a,
+                        max_a=self.max_a,
+                        kc=self.kc,
+                        max_jerk=5.0
+                    )
+                else:
+                    # CAR_FOLLOWING: Direct acceleration command from the RL model
+                    target_acc = float(car.rl_action)
+                    target_acc = max(self.min_a, min(self.max_a, target_acc))
+
                 # Enforce physical constraints: jerk (rate of change of acceleration)
                 last_acc = getattr(car, '_prev_acc', car.acceleration)
                 jerk = (target_acc - last_acc) / dt
@@ -53,6 +88,9 @@ class RLCity(City):
             car.just_collided_front = False
             car.just_collided_rear = False
             car._prev_acc = 0.0
+            if not hasattr(car, 'supervisor') or car.supervisor is None:
+                car.supervisor = VehicleSupervisor()
+            car.fsm_state = FSMState.FREE_CRUISE.value
 
     def handle_collisions(self):
         self.collided_this_step = False

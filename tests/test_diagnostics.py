@@ -74,7 +74,8 @@ def run_diagnostics(model_path="td3_accel_agent.zip"):
             city_bcc.run(params['dt'])
             city_accbcc.run(params['dt'])
             
-            obs_arr = AccelTrafficEnv.get_city_obs(city_rl, params['v_des'])
+            obs_dim = model.observation_space.shape[0]
+            obs_arr = AccelTrafficEnv.get_city_obs(city_rl, params['v_des'], obs_dim=obs_dim)
             act, _ = model.predict(obs_arr, deterministic=True)
             for i, car in enumerate(city_rl.cars[1:]):
                 car.rl_action = float(act[i][0])

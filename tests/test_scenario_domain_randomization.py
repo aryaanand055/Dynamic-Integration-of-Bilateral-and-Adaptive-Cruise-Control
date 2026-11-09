@@ -33,11 +33,11 @@ class TestScenarioDomainRandomization(unittest.TestCase):
             self.assertIn(name, AccelTrafficEnv.SCENARIO_ARCHETYPES)
 
     def test_02_all_archetypes_initialization(self):
-        """Verify that every archetype initializes and generates valid 7D observations."""
+        """Verify that every archetype initializes and generates valid 6D canonical observations."""
         for arch in AccelTrafficEnv.SCENARIO_ARCHETYPES:
             obs = self.env.reset(scenario_archetype=arch)
             self.assertEqual(self.env.scenario_archetype, arch)
-            self.assertEqual(obs.shape, (5, 7))
+            self.assertEqual(obs.shape, (5, 6))
             self.assertFalse(np.isnan(obs).any())
             self.assertFalse(np.isinf(obs).any())
 
@@ -129,7 +129,7 @@ class TestScenarioDomainRandomization(unittest.TestCase):
         for _ in range(10):
             self.env.step_async(actions)
             obs, rewards, dones, infos = self.env.step_wait()
-            self.assertEqual(obs.shape, (5, 7))
+            self.assertEqual(obs.shape, (5, 6))
             self.assertEqual(rewards.shape, (5,))
             self.assertFalse(np.isnan(obs).any())
 

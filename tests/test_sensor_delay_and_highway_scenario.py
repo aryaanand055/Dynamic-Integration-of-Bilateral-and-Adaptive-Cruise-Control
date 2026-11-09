@@ -71,10 +71,12 @@ class TestSensorDelayAndHighwayScenario(unittest.TestCase):
         city.init(*self.init_args, dt=0.1, model='ACC', sensor_delay=0.2, sensor_noise=0.1)
         city.run(0.1)
 
-        obs = AccelTrafficEnv.get_city_obs(city, v_des=15.0)
-        self.assertEqual(obs.shape, (len(city.cars) - 1, 7))
+        obs = AccelTrafficEnv.get_city_obs(city, v_des=15.0, obs_dim=6)
+        self.assertEqual(obs.shape, (len(city.cars) - 1, 6))
         self.assertFalse(np.isnan(obs).any())
         self.assertFalse(np.isinf(obs).any())
+        obs_7d = AccelTrafficEnv.get_city_obs(city, v_des=15.0, obs_dim=7)
+        self.assertEqual(obs_7d.shape, (len(city.cars) - 1, 7))
 
     def test_scenario_11_registration(self):
         """Ensure official benchmark suite includes exactly 11 curated scenarios."""
@@ -125,8 +127,9 @@ class TestSensorDelayAndHighwayScenario(unittest.TestCase):
             city_rl.lead_velocity_profile = lead_profile
             for c in city_rl.cars[1:]:
                 c.is_rl = True
+            obs_dim = rl_model.observation_space.shape[0]
             for _ in range(steps):
-                obs = AccelTrafficEnv.get_city_obs(city_rl, v_des=24.0)
+                obs = AccelTrafficEnv.get_city_obs(city_rl, v_des=24.0, obs_dim=obs_dim)
                 act, _ = rl_model.predict(obs, deterministic=True)
                 for i, car in enumerate(city_rl.cars[1:]):
                     act_val = act[i][0] if (np.ndim(act) > 1 and i < len(act)) else (act[i] if i < len(act) else 0.0)

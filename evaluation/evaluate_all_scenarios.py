@@ -329,7 +329,8 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
             city_bcc.run(params['dt'])
             city_accbcc.run(params['dt'])
             
-            obs_arr = AccelTrafficEnv.get_city_obs(city_rl, params['v_des'])
+            obs_dim = getattr(getattr(model, 'observation_space', None), 'shape', [6])[0]
+            obs_arr = AccelTrafficEnv.get_city_obs(city_rl, params['v_des'], obs_dim=obs_dim)
             act, _ = model.predict(obs_arr, deterministic=True)
             for i, car in enumerate(city_rl.cars[1:]):
                 if getattr(car, 'is_rl', False):

@@ -378,7 +378,11 @@ class City:
                 
                 rel_v = front_car_vel - car_vel
                 desired_gap = self.min_dis + car_vel * self.reaction_time
-                acc = self.kd * (gap - desired_gap) +  self.kv * rel_v
+                if front_car is None or gap >= 70.0:
+                    # Free cruise mode: regulate directly to desired velocity
+                    acc = self.kc * (self.v_des - car_vel)
+                else:
+                    acc = self.kd * (gap - desired_gap) +  self.kv * rel_v
                 acc = max(self.min_a, min(self.max_a, acc))
             elif self.model == 'BCC':        
                 car.mode = 'BCC'        
