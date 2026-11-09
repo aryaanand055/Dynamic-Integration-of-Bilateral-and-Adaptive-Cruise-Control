@@ -176,6 +176,26 @@ class TestGUIIntuitiveness(unittest.TestCase):
         self.assertEqual(app.crit_badge_rms_jerk.cget("text"), "PASS")
         self.assertEqual(app.crit_badge_dii_vs_classical.cget("text"), "PASS")
         self.assertEqual(app.crit_badge_wave_ratio.cget("text"), "PASS")
+        self.assertEqual(app.crit_badge_cut_in_resistance.cget("text"), "PASS")
+
+        # Mock an evaluation payload where cut_in_resistance breaches envelope X
+        mock_cutin_fail = {
+            "RL": {
+                "DII": 92.0,
+                "raw": {
+                    "collisions": 0,
+                    "min_gap": 2.2,
+                    "rms_jerk": 0.45,
+                    "wave_ratio": 1.05,
+                    "max_x_ratio": 1.50,  # Breaches envelope X => FAIL
+                }
+            },
+            "ACC": {"DII": 88.0},
+            "IDM_gap_matched": {"DII": 78.0}
+        }
+        app._compute_and_update_verdict(mock_cutin_fail)
+        self.assertEqual(app.verdict_label.cget("text"), "NOT INTUITIVE")
+        self.assertEqual(app.crit_badge_cut_in_resistance.cget("text"), "FAIL")
 
 
 if __name__ == "__main__":

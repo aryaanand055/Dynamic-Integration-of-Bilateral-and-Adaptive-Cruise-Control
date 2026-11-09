@@ -20,13 +20,16 @@ class City:
         self.overall_max_gap = 0
         self.all_gaps = []
 
-    def init(self, car_number, kd, kv, kc, v_des, max_v, min_v, min_dis, reaction_time, headway_time, max_a, min_a, min_gap=5.0, dt=0.1, model='ACC'):
+    def init(self, car_number, kd, kv, kc, v_des, max_v, min_v, min_dis, reaction_time, headway_time, max_a, min_a, min_gap=5.0, dt=0.1, model='ACC', sensor_delay=0.0, sensor_noise=0.0):
         # Reset simulation state
         self.cars.clear()
         self.roads.clear()
         self.step_count = 0
         self.model = model
         self.dt = dt
+        self.sensor_delay = float(sensor_delay)
+        self.sensor_noise = float(sensor_noise)
+        self._delay_buffer = []
         self.overall_min_gap = float('inf')
         self.overall_max_gap = 0
         self.all_gaps = []
@@ -75,6 +78,35 @@ class City:
         self.rear_cutout_time = None
         self.car_velocity_profiles = {}
 
+    def get_perceived_car_states(self):
+        """
+        Returns perceived (pos, velocity) tuples for all cars,
+        accounting for configured sensor_delay and sensor_noise.
+        """
+        current_states = [(c.pos, c.velocity) for c in self.cars]
+        if getattr(self, 'sensor_delay', 0.0) <= 0.0 and getattr(self, 'sensor_noise', 0.0) <= 0.0:
+            return current_states
+
+        dt = max(1e-4, float(self.dt))
+        delay_steps = int(round(self.sensor_delay / dt))
+
+        if delay_steps > 0 and len(self._delay_buffer) > delay_steps:
+            delayed_states = self._delay_buffer[-delay_steps - 1]
+        elif self._delay_buffer:
+            delayed_states = self._delay_buffer[0]
+        else:
+            delayed_states = current_states
+
+        if getattr(self, 'sensor_noise', 0.0) > 0.0:
+            noisy_states = []
+            for p, v in delayed_states:
+                p_noisy = p + float(np.random.normal(0.0, self.sensor_noise))
+                v_noisy = max(0.0, v + float(np.random.normal(0.0, self.sensor_noise * 0.5)))
+                noisy_states.append((p_noisy, v_noisy))
+            return noisy_states
+
+        return delayed_states
+
     def run(self, dt=None):
         # Run one simulation step with real dt
         if dt is None:
@@ -83,6 +115,14 @@ class City:
             if round(self.step_count * dt, 3) >= self.rear_cutout_time:
                 if len(self.cars) > 1 and not getattr(self.cars[-1], 'has_exited', False):
                     self.cars[-1].has_exited = True
+
+        # Record current truth states for sensor delay buffer
+        current_states = [(c.pos, c.velocity) for c in self.cars]
+        max_buffer_len = max(20, int(round((getattr(self, 'sensor_delay', 0.0) + 2.0) / max(1e-4, self.dt))))
+        self._delay_buffer.append(current_states)
+        if len(self._delay_buffer) > max_buffer_len:
+            self._delay_buffer.pop(0)
+
         self.driver_decision()
         self.move_forward(dt)
         self.step_count += 1
@@ -127,7 +167,7 @@ class City:
     def driver_decision(self):
         road_length = self.roads[0].length if self.roads else 1000
         dt = self.dt
-        car_states = [(c.pos, c.velocity) for c in self.cars]
+        car_states = self.get_perceived_car_states()
 
         for idx, car in enumerate(self.cars):
             if getattr(car, 'has_exited', False):
@@ -232,44 +272,7 @@ class City:
                     car.acceleration = acc
                     continue
                 continue
-            if idx == len(self.cars) - 1:
-                if hasattr(self, 'follower_velocity_profile') and self.follower_velocity_profile:
-                    time = round(self.step_count * dt, 3)
-                    for i in range(len(self.follower_velocity_profile) - 1):
-                        t1, v1 = self.follower_velocity_profile[i]
-                        t2, v2 = self.follower_velocity_profile[i + 1]
-                        if t1 <= time <= t2:
-                            alpha = (time - t1) / (t2 - t1)
-                            target_velocity = v1 + alpha * (v2 - v1)
-                            acc = self.kc * (target_velocity - car.velocity)
-                            acc = max(self.min_a, min(self.max_a, acc))
-                            last_acc = car.acceleration
-                            jerk = (acc - last_acc) / dt
-                            max_jerk = 5.0
-                            if jerk > max_jerk:
-                                acc = last_acc + max_jerk * dt
-                            elif jerk < -max_jerk:
-                                acc = last_acc - max_jerk * dt
-                            car.acceleration = acc
-                            break
-                    else:
-                        t1, v1 = self.follower_velocity_profile[-1]
-                        target_velocity = v1
-                        acc = self.kc * (target_velocity - car.velocity)
-                        acc = max(self.min_a, min(self.max_a, acc))
-                        last_acc = car.acceleration
-                        jerk = (acc - last_acc) / dt
-                        max_jerk = 5.0
-                        if jerk > max_jerk:
-                            acc = last_acc + max_jerk * dt
-                        elif jerk < -max_jerk:
-                            acc = last_acc - max_jerk * dt
-                        car.acceleration = acc
-                    continue
-
-    
             # Find the car ahead and behind on the same road (circular road)
-            
             cars_same_road = [c for c in self.cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
 
             def gap_to(other):
@@ -283,6 +286,88 @@ class City:
                 return gap if gap > 0 else float('inf')
             
             back_car = min(cars_same_road, key=gap_from, default=None) if cars_same_road else None
+
+            if idx == len(self.cars) - 1:
+                if hasattr(self, 'follower_velocity_profile') and self.follower_velocity_profile:
+                    time = round(self.step_count * dt, 3)
+                    target_velocity = self.v_des
+                    for i in range(len(self.follower_velocity_profile) - 1):
+                        t1, v1 = self.follower_velocity_profile[i]
+                        t2, v2 = self.follower_velocity_profile[i + 1]
+                        if t1 <= time <= t2:
+                            alpha = (time - t1) / (t2 - t1)
+                            target_velocity = v1 + alpha * (v2 - v1)
+                            break
+                    else:
+                        t1, v1 = self.follower_velocity_profile[-1]
+                        target_velocity = v1
+
+                    # Forward collision prevention floor: trailing car must not ram the car ahead
+                    front_idx = self.cars.index(front_car) if front_car in self.cars else None
+                    front_car_pos, front_car_vel = car_states[front_idx] if front_idx is not None else (car.pos, car.velocity)
+                    cur_gap = (car.pos - front_car_pos - (front_car.length if front_car else 0)) % road_length if front_car else road_length
+                    
+                    # Smoothly cap target velocity based on headway to front car: v_safe = front_v + (gap - s_safe)/T
+                    # Ensures trailing car closes aggressively without ramming into the rear of car 13
+                    desired_min_buffer = 4.0
+                    if cur_gap < desired_min_buffer:
+                        # Hard brake if breaching minimum safety buffer
+                        acc = self.min_a
+                    elif cur_gap < desired_min_buffer + 6.0:
+                        # Progressive throttling when closing rapidly
+                        v_cap = max(0.0, front_car_vel + (cur_gap - desired_min_buffer) / 0.8)
+                        acc = min(self.kc * (target_velocity - car.velocity), self.kc * (v_cap - car.velocity))
+                    else:
+                        acc = self.kc * (target_velocity - car.velocity)
+
+                    acc = max(self.min_a, min(self.max_a, acc))
+                    last_acc = car.acceleration
+                    jerk = (acc - last_acc) / dt
+                    max_jerk = 5.0
+                    if jerk > max_jerk:
+                        acc = last_acc + max_jerk * dt
+                    elif jerk < -max_jerk:
+                        acc = last_acc - max_jerk * dt
+                    car.acceleration = acc
+                    continue
+
+            # Check if this car is a human driver with an IDM behavioral profile
+            if getattr(car, 'is_human', False) and getattr(car, 'human_profile', None):
+                hp = car.human_profile
+                a_max = hp.get('a_max', 1.5)
+                b = hp.get('b', 2.0)
+                T = hp.get('T', 1.2)
+                s0 = hp.get('s0', 4.0)
+                delta = hp.get('delta', 4.0)
+                v0 = hp.get('v0', self.v_des)
+
+                front_idx = self.cars.index(front_car) if front_car in self.cars else None
+                front_car_pos, front_car_vel = car_states[front_idx] if front_idx is not None else (car.pos, car.velocity)
+                gap = (car.pos - front_car_pos - (front_car.length if front_car else 0)) % road_length if front_car else road_length
+                
+                v = max(0.0, car.velocity)
+                vf = max(0.0, front_car_vel)
+                dv = v - vf
+                s = max(gap, 0.1)
+
+                denom_ab = 2.0 * math.sqrt(max(1e-4, a_max * b))
+                interaction = v * T + (v * dv) / denom_ab
+                s_star = s0 + max(0.0, interaction)
+
+                free_ratio = (v / v0) ** delta if v0 > 0 else 0.0
+                gap_ratio = (s_star / s) ** 2
+                target_acc = a_max * (1.0 - free_ratio - gap_ratio)
+                acc = max(self.min_a, min(self.max_a, target_acc))
+
+                last_acc = car.acceleration
+                jerk = (acc - last_acc) / dt
+                max_jerk = 5.0
+                if jerk > max_jerk:
+                    acc = last_acc + max_jerk * dt
+                elif jerk < -max_jerk:
+                    acc = last_acc - max_jerk * dt
+                car.acceleration = acc
+                continue
 
             if self.model == 'ACC' or ((self.model == 'BCC' or self.model=="ACC+BCC") and (idx == len(self.cars) - 1 or back_car is None)):
                 car.mode = 'ACC'
@@ -320,9 +405,22 @@ class City:
 
             elif self.model == 'ACC+BCC':
                 self.mode = "INTEGRATED"
-                ve = car.velocity
-                vl = front_car.velocity if front_car else ve
-                vf = back_car.velocity if back_car else ve
+                car_pos, car_vel = car_states[idx]
+                front_idx = self.cars.index(front_car) if front_car in self.cars else None
+                front_car_pos, front_car_vel = car_states[front_idx] if front_idx is not None else (car_pos, car_vel)
+                front_gap = abs((car_pos - front_car_pos - (front_car.length if front_car else 0)) % road_length) if front_car else road_length
+
+                if back_car is not None and back_car in self.cars:
+                    back_idx = self.cars.index(back_car)
+                    back_car_pos, back_car_vel = car_states[back_idx]
+                    back_gap = abs((back_car_pos - car_pos - car.length) % road_length)
+                    vf = back_car_vel
+                else:
+                    back_gap = road_length
+                    vf = car_vel
+
+                ve = car_vel
+                vl = front_car_vel
                 ae = abs(self.min_a)
                 af = ae * 0.7  
                 Tr = self.reaction_time
@@ -333,19 +431,6 @@ class City:
                 Grear_min = vf * Tr + ((vf - ve) ** 2) / (2 * af) + Lb
 
                 X = Gfront_min + Le + Grear_min
-
-                car_pos, car_vel = car_states[idx]
-                front_idx = self.cars.index(front_car) if front_car in self.cars else None
-                front_car_pos, front_car_vel = car_states[front_idx] if front_idx is not None else (car_pos, car_vel)
-                front_gap = abs((car_pos - front_car_pos - (front_car.length if front_car else 0)) % road_length) if front_car else road_length
-
-                if back_car is not None and back_car in self.cars:
-                    back_idx = self.cars.index(back_car)
-                    back_car_pos, back_car_vel = car_states[back_idx]
-                    back_gap = abs((back_car_pos - car_pos - car.length) % road_length)
-                else:
-                    back_gap = road_length
-                    vf = ve
 
                 car.integration_factor = self.calculate_integration_factor(front_gap, back_gap, X, car, front_car, back_car, idx)
                 iF = car.integration_factor

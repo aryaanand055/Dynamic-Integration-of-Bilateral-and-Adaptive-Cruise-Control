@@ -69,10 +69,21 @@ class TransportationPainter(tk.Canvas):
                 is_human = getattr(car, 'is_human', False) or getattr(car, 'is_reckless', False)
                 is_reckless = getattr(car, 'is_reckless', False)
                 
-                # Human car maintains distinct vivid crimson throughout the whole simulation
+                # Human car styling (supports specific profile colors like Cautious Amber or Aggressive Red)
                 if is_human:
-                    fill_color = 'orange' if car.color == 'orange' else '#ef4444'
-                    outline_color = "#fee2e2"
+                    p_name = getattr(car, 'human_profile_name', '')
+                    if p_name == 'CAUTIOUS':
+                        fill_color = '#eab308'
+                        outline_color = "#fef08a"
+                    elif p_name == 'NORMAL':
+                        fill_color = '#94a3b8'
+                        outline_color = "#e2e8f0"
+                    elif car.color == 'orange':
+                        fill_color = 'orange'
+                        outline_color = "#fed7aa"
+                    else:
+                        fill_color = '#ef4444'
+                        outline_color = "#fee2e2"
                     outline_width = 2
                 else:
                     fill_color = car.color
@@ -94,15 +105,17 @@ class TransportationPainter(tk.Canvas):
                 v_curr = getattr(car, 'velocity', 0.0)
                 if is_human:
                     acc = getattr(car, 'acceleration', 0.0)
+                    p_name = getattr(car, 'human_profile_name', None)
+                    p_prefix = f"👤 {p_name}" if p_name else "👤 HUMAN"
                     if acc < -2.0:
-                        tag_text = f"👤 HUMAN (BRAKING) {v_curr:.1f} m/s"
+                        tag_text = f"{p_prefix} (BRAKING) {v_curr:.1f} m/s"
                         tag_color = "#f87171"
                     elif is_reckless and (acc > 2.5 or v_curr > 22.0):
-                        tag_text = f"👤 HUMAN (SURGE) {v_curr:.1f} m/s"
+                        tag_text = f"{p_prefix} (SURGE) {v_curr:.1f} m/s"
                         tag_color = "#f87171"
                     else:
-                        tag_text = f"👤 HUMAN {v_curr:.1f} m/s"
-                        tag_color = "#fca5a5"
+                        tag_text = f"{p_prefix} {v_curr:.1f} m/s"
+                        tag_color = "#fca5a5" if fill_color == '#ef4444' else ("#fde047" if fill_color == '#eab308' else "#cbd5e1")
 
                     self.create_text(
                         x,
@@ -111,8 +124,8 @@ class TransportationPainter(tk.Canvas):
                         font=("Segoe UI", 7, "bold"),
                         fill=tag_color
                     )
-                    mode_label = "HUMAN"
-                    badge_color = "#ef4444"
+                    mode_label = p_name if p_name else "HUMAN"
+                    badge_color = fill_color
                     badge_font = ("Consolas", 8, "bold")
                 elif getattr(car, 'is_rl', False):
                     mode_label = "RL"

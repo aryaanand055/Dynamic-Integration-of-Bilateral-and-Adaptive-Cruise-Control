@@ -17,7 +17,7 @@ from gui.control_window import ControlWindow
 from simulation.rl_city import RLCity
 from env.accel_traffic_env import AccelTrafficEnv
 from simulation.config import PROJECT_ROOT, MODELS_DIR, resolve_model_path
-from evaluation.evaluate_all_scenarios import get_scenarios, load_csv_profile, generate_random_speed_profile
+from evaluation.evaluate_all_scenarios import get_scenarios, load_csv_profile
 
 # ==============================================================================
 # INTUITIVENESS VERDICT CRITERIA CONFIGURATION
@@ -58,6 +58,13 @@ INTUITIVENESS_CRITERIA_CONFIG = {
         'eval': lambda rl, classical, idm: rl.get('raw', {}).get('wave_ratio', 99.0) <= 1.25,
         'format_val': lambda rl, overall: f"{rl.get('raw', {}).get('wave_ratio', 0.0):.2f}x",
         'target': '<= 1.25x',
+    },
+    'cut_in_resistance': {
+        'title': 'Cut-In Resistance (X-Envelope)',
+        'desc': 'Peak forward gap must not breach dynamic insertion envelope (max s_front/X <= 1.00x)',
+        'eval': lambda rl, classical, idm: rl.get('raw', {}).get('max_x_ratio', rl.get('cut_in', {}).get('max_x_ratio', 0.5)) <= 1.00,
+        'format_val': lambda rl, overall: f"{rl.get('raw', {}).get('max_x_ratio', rl.get('cut_in', {}).get('max_x_ratio', 0.0)):.2f}x",
+        'target': '<= 1.00x',
     },
 }
 
@@ -152,7 +159,7 @@ class RLControlWindow(ControlWindow):
         scenario_card.pack(fill="x", pady=(0, 10))
 
         ttk.Label(scenario_card, text="Scenario Selection", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(scenario_card, text="Select operational benchmark regime (1–15)", style="Meta.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(scenario_card, text="Select operational benchmark regime (1–10)", style="Meta.TLabel").pack(anchor="w", pady=(0, 8))
 
         self.benchmark_scenarios = get_scenarios()
         self.scenario_options = ["0. Default Free Simulation"] + [sc['name'] for sc in self.benchmark_scenarios]
@@ -229,32 +236,44 @@ class RLControlWindow(ControlWindow):
         """
         Applies human-driven and autonomous algorithmic roles, color tags,
         and attributes across all vehicles in a city for the selected scenario.
-        Human-driven vehicles retain #ef4444 (Vivid Crimson) throughout the WHOLE simulation.
         """
         if not city or not getattr(city, 'cars', None):
             return
+
+        from evaluation.evaluate_all_scenarios import HUMAN_PROFILES
 
         if sc is not None:
             human_lead = sc.get('human_lead', False) or sc.get('reckless_lead', False)
             human_trailing = sc.get('human_trailing', False) or sc.get('reckless_trailing', False)
             human_idx = sc.get('human_car_index', sc.get('braking_car_index', None))
+            human_assignments = sc.get('human_assignments', {})
 
             for i, car in enumerate(city.cars):
                 is_human = False
+                p_name = None
                 if i == 0 and human_lead:
                     is_human = True
                 elif i == len(city.cars) - 1 and human_trailing:
                     is_human = True
                 elif human_idx is not None and i == human_idx:
                     is_human = True
+                elif i in human_assignments:
+                    is_human = True
+                    p_name = human_assignments[i]
 
                 car.is_human = is_human
                 car.is_reckless = is_human
                 car.driver_type = 'HUMAN' if is_human else 'ALGORITHM'
+                car.human_profile_name = p_name
 
                 if is_human:
-                    car.color = "#ef4444"  # Human car (alone in vivid crimson red throughout whole sim)
-                    car.original_color = "#ef4444"
+                    if p_name and p_name in HUMAN_PROFILES:
+                        car.color = HUMAN_PROFILES[p_name]['color']
+                        car.original_color = car.color
+                        car.human_profile = dict(HUMAN_PROFILES[p_name])
+                    else:
+                        car.color = "#ef4444"  # Default human driver (vivid crimson red)
+                        car.original_color = "#ef4444"
                 else:
                     if i == 0:
                         car.color = "#38bdf8"  # Autonomous lead (sky blue)
@@ -273,6 +292,7 @@ class RLControlWindow(ControlWindow):
                 car.is_human = False
                 car.is_reckless = False
                 car.driver_type = 'ALGORITHM'
+                car.human_profile_name = None
                 if i == 0:
                     car.color = "#38bdf8"
                     car.original_color = "#38bdf8"
@@ -292,35 +312,64 @@ class RLControlWindow(ControlWindow):
             sc = self.benchmark_scenarios[sel_idx - 1]
             dur = sc.get('dur', 40.0)
             v_des = sc.get('v_des', 15.0)
+            car_num = sc.get('car_number', 15)
             human_lead = sc.get('human_lead', False) or sc.get('reckless_lead', False)
             human_trailing = sc.get('human_trailing', False) or sc.get('reckless_trailing', False)
             human_idx = sc.get('human_car_index', sc.get('braking_car_index', None))
+            mixed = sc.get('mixed_traffic', False)
 
             human_info = ""
-            if human_lead and human_trailing:
+            if mixed:
+                human_info = " | 🚗 50% Auto + 50% Diverse Human IDM"
+            elif human_lead and human_trailing:
                 human_info = " | 👤 Dual Human Drivers (Red [HUMAN])"
             elif human_lead:
                 human_info = " | 👤 Human Lead Driver (Red [HUMAN])"
             elif human_trailing:
                 human_info = " | 👤 Human Rear Driver (Red [HUMAN])"
             elif human_idx is not None:
-                if sc.get('random_speed_shifts'):
-                    human_info = f" | 👤 Car #{human_idx + 1} Human Driver (Shifts to Random Speeds after 5s, Red [HUMAN])"
-                else:
-                    human_info = f" | 👤 Car #{human_idx + 1} Human Driver (Red [HUMAN])"
+                human_info = f" | 👤 Car #{human_idx + 1} Human Driver (Red [HUMAN])"
 
             self.scenario_info_label.config(
-                text=f"Dur: {dur:.0f}s | Target: {v_des:.1f} m/s{human_info}",
+                text=f"Cars: {car_num} | Dur: {dur:.0f}s | Target: {v_des:.1f} m/s{human_info}",
                 foreground="#f87171" if human_info else "#38bdf8"
             )
-            # Pre-fill v_des entry
+            # Pre-fill v_des and car_number entries
             if 'v_des' in self.entries:
                 self.entries['v_des'].delete(0, tk.END)
                 self.entries['v_des'].insert(0, str(v_des))
+            if 'car_number' in self.entries:
+                self.entries['car_number'].delete(0, tk.END)
+                self.entries['car_number'].insert(0, str(car_num))
 
-            # Immediately update existing city cars and repaint canvas so human car turns red instantly
+            # Re-initialize cities with scenario's car_number so canvas immediately reflects car count
+            args = []
+            param_keys = ["car_number", "kd", "kv", "kc", "v_des", "max_v", "min_v", "min_dis", "reaction_time", "headway_time", "max_a", "min_a", "min_gap", "dt"]
+            for key in param_keys:
+                val = self.entries[key].get()
+                try:
+                    val = float(val) if '.' in val or 'e' in val.lower() else int(val)
+                except Exception:
+                    val = 0
+                args.append(val)
+            dt = args[-1]
+            init_params = args[:-1]
+            sensor_delay = float(self.entries['sensor_delay'].get()) if 'sensor_delay' in self.entries else 0.0
+            sensor_noise = float(self.entries['sensor_noise'].get()) if 'sensor_noise' in self.entries else 0.0
+
+            self.city_acc.init(*init_params, dt=dt, model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+            self.city_bcc.init(*init_params, dt=dt, model='BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+            self.city_accbcc.init(*init_params, dt=dt, model='ACC+BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+            self.city_rl.init(*init_params, dt=dt, model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+
             for city in [self.city_acc, self.city_bcc, self.city_accbcc, self.city_rl]:
                 self._apply_car_identities(city, sc)
+
+            self.painter_acc.set_elements(self.city_acc.roads, self.city_acc.cars)
+            self.painter_bcc.set_elements(self.city_bcc.roads, self.city_bcc.cars)
+            self.painter_accbcc.set_elements(self.city_accbcc.roads, self.city_accbcc.cars)
+            self.painter_rl.set_elements(self.city_rl.roads, self.city_rl.cars)
+
             for painter in getattr(self, 'painters', []):
                 if painter:
                     painter.repaint()
@@ -793,7 +842,7 @@ class RLControlWindow(ControlWindow):
 
         tk.Label(
             table_card,
-            text="16-Scenario Comprehensive Benchmark Results",
+            text="11-Scenario Comprehensive Benchmark Results",
             fg="#e2e8f0",
             bg="#111827",
             font=("Segoe UI", 10, "bold")
@@ -801,7 +850,7 @@ class RLControlWindow(ControlWindow):
 
         columns = (
             "controller", "dii", "c1", "c2", "c3", "c4", "r_decoup",
-            "rms_jerk", "flips", "wave", "min_gap", "collisions"
+            "rms_jerk", "flips", "wave", "cut_in", "min_gap", "collisions"
         )
         self.intuitiveness_tree = ttk.Treeview(
             table_card,
@@ -812,18 +861,19 @@ class RLControlWindow(ControlWindow):
         )
 
         col_configs = [
-            ("controller", "Controller", 140, "w"),
-            ("dii", "DII (0-100)", 85, "center"),
-            ("c1", "C1 Approp", 75, "center"),
-            ("c2", "C2 Smooth", 75, "center"),
-            ("c3", "C3 Calm", 75, "center"),
-            ("c4", "C4 Comfort", 75, "center"),
-            ("r_decoup", "R-Decoup", 80, "center"),
-            ("rms_jerk", "RMS Jerk", 95, "center"),
-            ("flips", "Flips/min", 75, "center"),
-            ("wave", "Wave Ratio", 85, "center"),
-            ("min_gap", "Min Gap", 85, "center"),
-            ("collisions", "Collisions", 75, "center"),
+            ("controller", "Controller", 130, "w"),
+            ("dii", "DII (0-100)", 80, "center"),
+            ("c1", "C1 Approp", 70, "center"),
+            ("c2", "C2 Smooth", 70, "center"),
+            ("c3", "C3 Calm", 70, "center"),
+            ("c4", "C4 Comfort", 70, "center"),
+            ("r_decoup", "R-Decoup", 75, "center"),
+            ("rms_jerk", "RMS Jerk", 85, "center"),
+            ("flips", "Flips/min", 70, "center"),
+            ("wave", "Wave Ratio", 80, "center"),
+            ("cut_in", "Cut-In (s_f/X)", 95, "center"),
+            ("min_gap", "Min Gap", 75, "center"),
+            ("collisions", "Collisions", 70, "center"),
         ]
 
         for cid, head, w, align in col_configs:
@@ -932,7 +982,7 @@ class RLControlWindow(ControlWindow):
         self.btn_run_eval.config(state="disabled", text="⏳ Running Evaluation...")
         if hasattr(self, 'status_bar') and self.status_bar:
             self.status_bar.config(
-                text="Running full 16-scenario Driver Intuitiveness evaluation suite in background...",
+                text="Running full 10-scenario Driver Intuitiveness evaluation suite in background...",
                 fg="#38bdf8"
             )
 
@@ -941,10 +991,25 @@ class RLControlWindow(ControlWindow):
     def _run_evaluation_worker(self):
         try:
             from evaluation.driver_intuitiveness import run_driver_intuitiveness_suite
+            from simulation.config import DEFAULT_SIM_PARAMS
             active_model = getattr(self, 'active_model_path', '')
             if not active_model or not os.path.exists(active_model):
                 active_model = resolve_model_path('td3_accel_agent.zip')
-            run_driver_intuitiveness_suite(model_path=active_model)
+
+            sim_params = dict(DEFAULT_SIM_PARAMS)
+            if hasattr(self, 'entries'):
+                if 'sensor_delay' in self.entries:
+                    try:
+                        sim_params['sensor_delay'] = float(self.entries['sensor_delay'].get())
+                    except Exception:
+                        pass
+                if 'sensor_noise' in self.entries:
+                    try:
+                        sim_params['sensor_noise'] = float(self.entries['sensor_noise'].get())
+                    except Exception:
+                        pass
+
+            run_driver_intuitiveness_suite(model_path=active_model, sim_params=sim_params)
             self.master.after(0, self._on_evaluation_success)
         except Exception as e:
             self.master.after(0, lambda err=e: self._on_evaluation_error(err))
@@ -1010,13 +1075,15 @@ class RLControlWindow(ControlWindow):
                     rms_j = f"{raw.get('rms_jerk', 0.0):.2f} m/s³"
                     flips = f"{raw.get('sign_changes_per_min', 0.0):.1f}"
                     wave = f"{raw.get('wave_ratio', 0.0):.2f}x"
+                    ci_ratio = raw.get('max_x_ratio', row_data.get('cut_in', {}).get('max_x_ratio', 0.0))
+                    cut_in_str = f"{ci_ratio:.2f}x"
                     mg = f"{raw.get('min_gap', 0.0):.2f} m"
                     cols = f"{raw.get('collisions', 0)}"
 
                     tag = "rl_row" if key == "RL" else "ref_row" if "IDM" in key else "norm_row"
                     self.intuitiveness_tree.insert(
                         "", "end",
-                        values=(disp_name, dii, c1, c2, c3, c4, r_dec, rms_j, flips, wave, mg, cols),
+                        values=(disp_name, dii, c1, c2, c3, c4, r_dec, rms_j, flips, wave, cut_in_str, mg, cols),
                         tags=(tag,)
                     )
 
@@ -1103,12 +1170,14 @@ class RLControlWindow(ControlWindow):
 
         self.dt = args[-1]
         init_params = args[:-1]
+        sensor_delay = float(self.entries['sensor_delay'].get()) if 'sensor_delay' in self.entries else 0.0
+        sensor_noise = float(self.entries['sensor_noise'].get()) if 'sensor_noise' in self.entries else 0.0
 
         # Initialize cities
-        self.city_acc.init(*init_params, dt=self.dt, model='ACC')
-        self.city_bcc.init(*init_params, dt=self.dt, model='BCC')
-        self.city_accbcc.init(*init_params, dt=self.dt, model='ACC+BCC')
-        self.city_rl.init(*init_params, dt=self.dt, model='ACC')
+        self.city_acc.init(*init_params, dt=self.dt, model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+        self.city_bcc.init(*init_params, dt=self.dt, model='BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+        self.city_accbcc.init(*init_params, dt=self.dt, model='ACC+BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+        self.city_rl.init(*init_params, dt=self.dt, model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
 
         # Update painters with new city elements
         self.painter_acc.set_elements(self.city_acc.roads, self.city_acc.cars)
@@ -1165,33 +1234,29 @@ class RLControlWindow(ControlWindow):
                 city.car_velocity_profiles = dict(car_velocity_profiles) if car_velocity_profiles else {}
                 self._apply_car_identities(city, sc)
 
-            # Configure RL mode: car 0 is leader, car N-1 (if follower profile) is human follower
-            # If braking_car_idx is set, that car executes braking profile and is not RL
+            # Configure RL mode: car 0 is leader, any human/scripted car is not RL
             for i, car in enumerate(self.city_rl.cars):
                 if i == 0 or getattr(car, 'is_human', False) or (i == len(self.city_rl.cars) - 1 and follower_profile and braking_car_idx is None):
                     car.is_rl = False
                     car.mode = 'ACC'
-                    if getattr(car, 'is_human', False):
-                        car.color = "#ef4444"
-                        car.original_color = "#ef4444"
                 else:
                     car.is_rl = True
                     car.rl_action = 0.0
                     car.color = "#22c55e"
                     car.original_color = "#22c55e"
 
+            mixed = sc.get('mixed_traffic', False)
             human_str = ""
-            if human_lead and human_trailing:
+            if mixed:
+                human_str = " | 🚗 50% Auto + 50% Diverse Human IDM"
+            elif human_lead and human_trailing:
                 human_str = " | 👤 Dual Human Drivers (Red [HUMAN])"
             elif human_lead:
                 human_str = " | 👤 Human Lead Driver (Red [HUMAN])"
             elif human_trailing:
                 human_str = " | 👤 Human Rear Driver (Red [HUMAN])"
             elif braking_car_idx is not None:
-                if sc.get('random_speed_shifts'):
-                    human_str = f" | 👤 Car #{braking_car_idx + 1} Human Driver (Random Speeds, Red [HUMAN])"
-                else:
-                    human_str = f" | 👤 Car #{braking_car_idx + 1} Human Driver (Red [HUMAN])"
+                human_str = f" | 👤 Car #{braking_car_idx + 1} Human Driver (Red [HUMAN])"
 
             if hasattr(self, 'status_bar') and self.status_bar:
                 self.status_bar.config(

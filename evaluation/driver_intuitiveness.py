@@ -47,6 +47,7 @@ from simulation.config import (
 )
 from env.accel_traffic_env import AccelTrafficEnv
 from evaluation.evaluate_all_scenarios import get_scenarios, load_csv_profile
+from evaluation.cut_in_metrics import compute_kinematic_x, compute_cut_in_metrics
 
 # ==============================================================================
 # DESIGN THRESHOLDS FOR DRIVER INTUITIVENESS INDEX (DII)
@@ -145,6 +146,8 @@ class IDMCity(City):
         delta = self.idm_params.get('delta', 4.0)
         denom_ab = 2.0 * math.sqrt(max(1e-4, a_max * b))
 
+        car_states = self.get_perceived_car_states()
+
         for idx, car in enumerate(self.cars[1:], start=1):
             if getattr(car, 'has_exited', False):
                 continue
@@ -157,14 +160,17 @@ class IDMCity(City):
                 return g if g > 0 else float('inf')
 
             front_car = min(cars_same, key=gap_to, default=None)
+            car_pos, car_vel = car_states[idx]
             if front_car is not None:
-                gap = (car.pos - front_car.pos - front_car.length) % road_len
-                vf = front_car.velocity
+                front_idx = self.cars.index(front_car)
+                front_pos, front_vel = car_states[front_idx]
+                gap = (car_pos - front_pos - front_car.length) % road_len
+                vf = front_vel
             else:
                 gap = road_len
                 vf = v0
 
-            v = max(0.0, car.velocity)
+            v = max(0.0, car_vel)
             vf = max(0.0, vf)
             dv = v - vf
             s = max(gap, 0.1)
@@ -197,10 +203,10 @@ class IDMCity(City):
             car.acceleration = acc
 
 
-def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reaction_time, collisions=0, min_gap=0.0):
+def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reaction_time, collisions=0, min_gap=0.0, v_des=15.0, min_a=-5.0):
     """
     Computes Driver Intuitiveness Index (DII) and its 5 constituent components
-    (C1..C5) plus raw metrics across recorded traces of all follower cars.
+    (C1..C5), Cut-In & X-Factor Vulnerability metrics, plus raw metrics across recorded traces of all follower cars.
     """
     total_steps = 0
     phantom_count = 0
@@ -373,6 +379,49 @@ def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reactio
     # (Note: Platoon string stability / wave ratio is tracked and reported as a separate platoon diagnostic)
     DII = float(100.0 * np.mean([C1, C2, C3, C4, rear_decoupling]))
 
+    # --- Cut-In & X-Factor Vulnerability Computation ---
+    car_cut_in_list = []
+    for car_data in follower_traces:
+        c_m = compute_cut_in_metrics(
+            gaps=car_data.get('gap', []),
+            speeds=car_data.get('v', []),
+            lead_speeds=car_data.get('vf', []),
+            rear_speeds=car_data.get('vb', []),
+            rear_gaps=car_data.get('bg', []),
+            dt=dt,
+            min_a=min_a,
+            reaction_time=rt,
+            min_gap=s0,
+            v_des=v_des,
+        )
+        car_cut_in_list.append(c_m)
+
+    if car_cut_in_list:
+        cut_in_agg = {
+            'max_gap': float(max(m['max_gap'] for m in car_cut_in_list)),
+            'mean_gap': float(np.mean([m['mean_gap'] for m in car_cut_in_list])),
+            'r_gap': float(max(m['r_gap'] for m in car_cut_in_list)),
+            'mean_x': float(np.mean([m['mean_x'] for m in car_cut_in_list])),
+            'max_x_ratio': float(max(m['max_x_ratio'] for m in car_cut_in_list)),
+            't_x_breach': float(max(m['t_x_breach'] for m in car_cut_in_list)),
+            'pct_x_breach': float(np.mean([m['pct_x_breach'] for m in car_cut_in_list])),
+            'civi_x': float(np.mean([m['civi_x'] for m in car_cut_in_list])),
+            'civi_x_score': float(np.mean([m['civi_x_score'] for m in car_cut_in_list])),
+            't_headway_2s': float(max(m['t_headway_2s'] for m in car_cut_in_list)),
+            'pct_headway_2s': float(np.mean([m['pct_headway_2s'] for m in car_cut_in_list])),
+            'max_headway': float(max(m['max_headway'] for m in car_cut_in_list)),
+            'expected_cut_ins': float(max(m['expected_cut_ins'] for m in car_cut_in_list)),
+            'p_cut_in': float(max(m['p_cut_in'] for m in car_cut_in_list)),
+            'leakage_ratio': float(max(m['leakage_ratio'] for m in car_cut_in_list)),
+        }
+    else:
+        cut_in_agg = {
+            'max_gap': 0.0, 'mean_gap': 0.0, 'r_gap': 1.0, 'mean_x': 0.0, 'max_x_ratio': 0.0,
+            't_x_breach': 0.0, 'pct_x_breach': 0.0, 'civi_x': 0.0, 'civi_x_score': 0.0,
+            't_headway_2s': 0.0, 'pct_headway_2s': 0.0, 'max_headway': 0.0,
+            'expected_cut_ins': 0.0, 'p_cut_in': 0.0, 'leakage_ratio': 0.0,
+        }
+
     return {
         'DII': DII,
         'C1': C1,
@@ -381,6 +430,7 @@ def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reactio
         'C4': C4,
         'C5': C5,
         'rear_decoupling': rear_decoupling,
+        'cut_in': cut_in_agg,
         'raw': {
             'phantom_rate': phantom_rate,
             'missed_rate': missed_rate,
@@ -393,6 +443,13 @@ def compute_dii_metrics(follower_traces, leader_trace, dur, dt, min_dis, reactio
             'collisions': int(collisions),
             'min_gap': float(min_gap),
             'mean_gap': float(np.mean(all_follower_gaps)) if all_follower_gaps else 0.0,
+            'max_gap': cut_in_agg['max_gap'],
+            'max_x_ratio': cut_in_agg['max_x_ratio'],
+            't_x_breach': cut_in_agg['t_x_breach'],
+            'civi_x': cut_in_agg['civi_x'],
+            't_headway_2s': cut_in_agg['t_headway_2s'],
+            'p_cut_in': cut_in_agg['p_cut_in'],
+            'leakage_ratio': cut_in_agg['leakage_ratio'],
         }
     }
 
@@ -470,8 +527,12 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
     and both IDM variants (Gap-Matched and Default textbook).
     Collects per-follower step traces and collisions.
     """
+    from evaluation.evaluate_all_scenarios import HUMAN_PROFILES
+
     params = dict(DEFAULT_SIM_PARAMS if sim_params is None else sim_params)
     params['v_des'] = sc['v_des']
+    car_count = sc.get('car_number', params['car_number'])
+    params['car_number'] = car_count
 
     init_args = [
         params[k] for k in [
@@ -480,36 +541,71 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
         ]
     ]
 
+    sensor_delay = params.get('sensor_delay', 0.0)
+    sensor_noise = params.get('sensor_noise', 0.0)
+
     city_acc = City()
-    city_acc.init(*init_args, dt=params['dt'], model='ACC')
+    city_acc.init(*init_args, dt=params['dt'], model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
 
     city_bcc = City()
-    city_bcc.init(*init_args, dt=params['dt'], model='BCC')
+    city_bcc.init(*init_args, dt=params['dt'], model='BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
 
     city_accbcc = City()
-    city_accbcc.init(*init_args, dt=params['dt'], model='ACC+BCC')
+    city_accbcc.init(*init_args, dt=params['dt'], model='ACC+BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
 
     follower_profile = sc.get('follower_profile', None)
+    human_assignments = sc.get('human_assignments', {})
+    human_idx = sc.get('human_car_index', sc.get('braking_car_index', None))
 
     city_rl = RLCity()
-    city_rl.init(*init_args, dt=params['dt'], model='ACC')
-    for i, car in enumerate(city_rl.cars):
-        if i == 0:
-            car.is_rl = False
-        elif i == len(city_rl.cars) - 1 and follower_profile:
-            car.is_rl = False
-        else:
-            car.is_rl = True
-            car.rl_action = 0.0
+    city_rl.init(*init_args, dt=params['dt'], model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
 
     # IDM Gap-Matched (s0 = min_dis, T = reaction_time)
     idm_gap_params = get_gap_matched_idm_params(params)
     city_idm_gap = IDMCity(idm_params=idm_gap_params)
-    city_idm_gap.init(*init_args, dt=params['dt'], model='ACC')
+    city_idm_gap.init(*init_args, dt=params['dt'], model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
 
     # IDM Default (s0 = 2.0, T = 1.5)
     city_idm_def = IDMCity(idm_params=IDM_PARAMS)
-    city_idm_def.init(*init_args, dt=params['dt'], model='ACC')
+    city_idm_def.init(*init_args, dt=params['dt'], model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+
+    cities = {
+        'ACC': city_acc,
+        'BCC': city_bcc,
+        'ACC+BCC': city_accbcc,
+        'RL': city_rl,
+        'IDM_gap_matched': city_idm_gap,
+        'IDM_default': city_idm_def,
+    }
+
+    # Configure human driver assignments and profiles
+    for c in cities.values():
+        if follower_profile:
+            c.follower_velocity_profile = list(follower_profile)
+            c.cars[-1].is_human = True
+            c.cars[-1].driver_type = 'HUMAN'
+            c.cars[-1].color = '#ef4444'
+
+        if human_idx is not None and human_idx < len(c.cars):
+            c.cars[human_idx].is_human = True
+            c.cars[human_idx].driver_type = 'HUMAN'
+            c.cars[human_idx].color = '#ef4444'
+
+        if human_assignments:
+            for idx, p_key in human_assignments.items():
+                if idx < len(c.cars) and p_key in HUMAN_PROFILES:
+                    c.cars[idx].is_human = True
+                    c.cars[idx].human_profile = dict(HUMAN_PROFILES[p_key])
+                    c.cars[idx].human_profile_name = p_key
+                    c.cars[idx].driver_type = 'HUMAN'
+                    c.cars[idx].color = HUMAN_PROFILES[p_key]['color']
+
+    for i, car in enumerate(city_rl.cars):
+        if i == 0 or getattr(car, 'is_human', False):
+            car.is_rl = False
+        else:
+            car.is_rl = True
+            car.rl_action = 0.0
 
     # Assign lead vehicle velocity profile
     lead_profile = []
@@ -523,22 +619,9 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
             for t in np.arange(0, sc['dur'] + 1.0, 0.5)
         ]
 
-    cities = {
-        'ACC': city_acc,
-        'BCC': city_bcc,
-        'ACC+BCC': city_accbcc,
-        'RL': city_rl,
-        'IDM_gap_matched': city_idm_gap,
-        'IDM_default': city_idm_def,
-    }
-
     if lead_profile:
         for c in cities.values():
             c.lead_velocity_profile = lead_profile
-
-    if follower_profile:
-        for c in cities.values():
-            c.follower_velocity_profile = list(follower_profile)
 
     rear_cutout_time = sc.get('rear_cutout_time', None)
     if rear_cutout_time is not None:
@@ -552,7 +635,16 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
 
     steps = int(sc['dur'] / params['dt'])
     road_len = city_acc.roads[0].length if city_acc.roads else 1000.0
-    num_eval_followers = (params['car_number'] - 2) if follower_profile else (params['car_number'] - 1)
+
+    # Evaluated followers: non-leader, autonomous vehicles (ignore scripted/human)
+    eval_indices = [
+        i for i, car in enumerate(city_rl.cars)
+        if i > 0 and (not follower_profile or i < len(city_rl.cars) - 1) and not getattr(car, 'is_human', False)
+    ]
+    # If in mixed traffic or special scenario where all followers are marked, fall back to all followers
+    if not eval_indices:
+        eval_indices = [i for i in range(1, len(city_rl.cars))]
+    num_eval_followers = len(eval_indices)
 
     traces = {
         k: {
@@ -589,8 +681,8 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
             record['leader']['v'].append(leader.velocity)
 
             step_gaps = []
-            eval_cars = city.cars[1 : 1 + num_eval_followers]
-            for i, car in enumerate(eval_cars):
+            for k, car_idx in enumerate(eval_indices):
+                car = city.cars[car_idx]
                 cars_same = [c for c in city.cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
 
                 def gap_to(other):
@@ -609,12 +701,12 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
                 bg = (back.pos - car.pos - car.length) % road_len if back else road_len
                 vb = back.velocity if back else car.velocity
 
-                record['followers'][i]['a'].append(car.acceleration)
-                record['followers'][i]['v'].append(car.velocity)
-                record['followers'][i]['gap'].append(fg)
-                record['followers'][i]['vf'].append(vf)
-                record['followers'][i]['bg'].append(bg)
-                record['followers'][i]['vb'].append(vb)
+                record['followers'][k]['a'].append(car.acceleration)
+                record['followers'][k]['v'].append(car.velocity)
+                record['followers'][k]['gap'].append(fg)
+                record['followers'][k]['vf'].append(vf)
+                record['followers'][k]['bg'].append(bg)
+                record['followers'][k]['vb'].append(vb)
                 step_gaps.append(fg)
 
             min_g = min(step_gaps) if step_gaps else road_len
@@ -623,7 +715,7 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
             if collided:
                 record['collisions'] += 1
 
-    # Compute DII results for all 6 models
+    # Compute DII and Cut-In results for all 6 models
     dii_results = {}
     for name, record in traces.items():
         dii_results[name] = compute_dii_metrics(
@@ -635,6 +727,8 @@ def simulate_benchmark_scenario(sc, rl_model, sim_params=None):
             reaction_time=params['reaction_time'],
             collisions=record['collisions'],
             min_gap=record['min_gap'],
+            v_des=sc.get('v_des', params.get('v_des', 15.0)),
+            min_a=params.get('min_a', -5.0),
         )
 
     # Compute pairwise IDM comparisons vs IDM (Gap-Matched) and IDM (Default)
@@ -802,10 +896,83 @@ def generate_idm_plots(idm_comp_gap_all, idm_comp_def_all, scenarios, output_png
     print(f"Saved IDM comparison plot: {output_png}")
 
 
-def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=None, save_outputs=True):
+def generate_cut_in_plots(all_dii, scenarios, output_png=None):
+    """
+    Generates and saves a comparison bar chart showing:
+    1. Peak Gap / X ratio (Xi) per scenario with Xi=1.0 critical cut-in threshold line
+    2. CIVI_X (X-Factor Cut-In Vulnerability Index) across controllers
+    """
+    if output_png is None:
+        output_png = PLOTS_DIR / "cut_in_vulnerability.png"
+
+    sc_names = [sc['name'].split('.')[1].strip() if '.' in sc['name'] else sc['name'] for sc in scenarios]
+    controllers = ['ACC', 'BCC', 'ACC+BCC', 'RL', 'IDM_gap_matched']
+    colors = {
+        'ACC': '#4A90E2',
+        'BCC': '#50E3C2',
+        'ACC+BCC': '#F5A623',
+        'RL': '#E02020',
+        'IDM_gap_matched': '#9013FE',
+    }
+    labels = {
+        'ACC': 'ACC',
+        'BCC': 'BCC',
+        'ACC+BCC': 'ACC+BCC',
+        'RL': 'RL (TD3)',
+        'IDM_gap_matched': 'IDM Ref (Gap-Matched)',
+    }
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(19, 12))
+    fig.patch.set_facecolor('#ffffff')
+
+    x = np.arange(len(sc_names))
+    width = 0.16
+
+    # Subplot 1: Peak Gap / X (Xi)
+    for idx, ctrl in enumerate(controllers):
+        ratios = [all_dii[sc['id']][ctrl]['cut_in']['max_x_ratio'] for sc in scenarios]
+        offset = (idx - 2) * width
+        rects = ax1.bar(x + offset, ratios, width, label=labels[ctrl], color=colors[ctrl], alpha=0.9, edgecolor='black', linewidth=0.5)
+        for r in rects:
+            h = r.get_height()
+            if h > 0.05:
+                ax1.text(r.get_x() + r.get_width() / 2.0, h + 0.05, f"{h:.2f}x", ha='center', va='bottom', fontsize=6.5)
+
+    ax1.axhline(1.0, color='#ef4444', linestyle='--', linewidth=1.5, label='Cut-In Threshold (s_front = X)')
+    ax1.set_ylabel('Peak Gap / Envelope X (Xi)', fontsize=11, fontweight='bold')
+    ax1.set_title('Cut-In Gap Dilation Ratio (max s_front / X) Across Scenarios', fontsize=13, fontweight='bold', pad=12)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(sc_names, fontsize=7.5, rotation=22, ha='right')
+    ax1.grid(axis='y', linestyle='--', alpha=0.3)
+    ax1.legend(loc='upper left', framealpha=0.9, fontsize=9.5)
+
+    # Subplot 2: CIVI_X
+    for idx, ctrl in enumerate(controllers):
+        civis = [all_dii[sc['id']][ctrl]['cut_in']['civi_x'] for sc in scenarios]
+        offset = (idx - 2) * width
+        rects = ax2.bar(x + offset, civis, width, label=labels[ctrl], color=colors[ctrl], alpha=0.9, edgecolor='black', linewidth=0.5)
+        for r in rects:
+            h = r.get_height()
+            if h > 0.005:
+                ax2.text(r.get_x() + r.get_width() / 2.0, h + 0.01, f"{h:.3f}", ha='center', va='bottom', fontsize=6.5)
+
+    ax2.set_ylabel('CIVI_X (Excess/X per second)', fontsize=11, fontweight='bold')
+    ax2.set_title('Cut-In Vulnerability Index (CIVI_X) Across Benchmark Scenarios', fontsize=13, fontweight='bold', pad=12)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(sc_names, fontsize=7.5, rotation=22, ha='right')
+    ax2.grid(axis='y', linestyle='--', alpha=0.3)
+    ax2.legend(loc='upper right', framealpha=0.9, fontsize=9.5)
+
+    plt.tight_layout()
+    plt.savefig(output_png, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"Saved Cut-In comparison plot: {output_png}")
+
+
+def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=None, save_outputs=True, sim_params=None):
     """
     Main execution pipeline for Driver Intuitiveness & IDM reference benchmark.
-    Runs all 7 scenarios, prints formatted comparison tables, saves JSON logs,
+    Runs all 11 scenarios, prints formatted comparison tables, saves JSON logs,
     and generates visualization figures.
     """
     resolved_model = resolve_model_path(model_path)
@@ -815,8 +982,12 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
     if scenarios is None:
         scenarios = get_scenarios()
 
+    delay = sim_params.get('sensor_delay', 0.0) if sim_params else 0.0
+    noise = sim_params.get('sensor_noise', 0.0) if sim_params else 0.0
+
     print("\n" + "=" * 78)
     print(" DRIVER INTUITIVENESS & IDM HUMAN REFERENCE EVALUATION SUITE")
+    print(f" (Sensor Delay = {delay:.2f}s, Sensor Noise = {noise:.2f}m)")
     print("=" * 78)
     print(f"Evaluated Policy Model: {resolved_model}")
     print(f"Primary IDM Reference: Gap-Matched IDM (s0=6.0m, T=0.8s, a_max=1.5m/s^2, b=2.0m/s^2)")
@@ -833,7 +1004,7 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
 
     for sc in scenarios:
         print(f"\n>>> Simulating {sc['name']}...")
-        dii_res, idm_gap, idm_def = simulate_benchmark_scenario(sc, rl_model)
+        dii_res, idm_gap, idm_def = simulate_benchmark_scenario(sc, rl_model, sim_params=sim_params)
         all_dii[sc['id']] = dii_res
         idm_comp_gap_all[sc['id']] = idm_gap
         idm_comp_def_all[sc['id']] = idm_def
@@ -848,6 +1019,15 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
             c_label = 'RL (TD3)' if c == 'RL' else ('IDM (Gap-Ref)' if c == 'IDM_gap_matched' else c)
             print(f"{c_label:<18} | {m['DII']:6.1f} | {m['C1']:5.2f} | {m['C2']:5.2f} | {m['C3']:5.2f} | {m['C4']:5.2f} | {m['rear_decoupling']:8.2f} | {r['rms_jerk']:8.2f} | {r['sign_changes_per_min']:7.1f} | {r['wave_ratio']:6.2f} | {r['min_gap']:6.2f}m")
 
+        # Print per-scenario Cut-In & X-Factor table
+        print(f"\n--- Cut-In Vulnerability & X-Factor Diagnostics: {sc['name']} ---")
+        print(f"{'Controller':<18} | {'MaxGap':>7} | {'Peak s_f/X':>10} | {'T(s_f>X)':>9} | {'CIVI_X':>7} | {'Headway>2s':>10} | {'Cut-In Prob':>11} | {'Leakage':>7}")
+        print("-" * 96)
+        for c in ['ACC', 'BCC', 'ACC+BCC', 'RL', 'IDM_gap_matched']:
+            ci = dii_res[c]['cut_in']
+            c_label = 'RL (TD3)' if c == 'RL' else ('IDM (Gap-Ref)' if c == 'IDM_gap_matched' else c)
+            print(f"{c_label:<18} | {ci['max_gap']:6.1f}m | {ci['max_x_ratio']:9.2f}x | {ci['t_x_breach']:8.1f}s | {ci['civi_x']:7.3f} | {ci['t_headway_2s']:9.1f}s | {ci['p_cut_in']:10.1f}% | {ci['leakage_ratio']:7.2f}")
+
     # Aggregate Overall Results (Averaged over all benchmark scenarios)
     overall_dii = {}
     for c in ctrl_list:
@@ -859,6 +1039,23 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
             'C4': float(np.mean([all_dii[sc['id']][c]['C4'] for sc in scenarios])),
             'C5': float(np.mean([all_dii[sc['id']][c]['C5'] for sc in scenarios])),
             'rear_decoupling': float(np.mean([all_dii[sc['id']][c]['rear_decoupling'] for sc in scenarios])),
+            'cut_in': {
+                'max_gap': float(max(all_dii[sc['id']][c]['cut_in']['max_gap'] for sc in scenarios)),
+                'mean_gap': float(np.mean([all_dii[sc['id']][c]['cut_in']['mean_gap'] for sc in scenarios])),
+                'r_gap': float(max(all_dii[sc['id']][c]['cut_in']['r_gap'] for sc in scenarios)),
+                'mean_x': float(np.mean([all_dii[sc['id']][c]['cut_in']['mean_x'] for sc in scenarios])),
+                'max_x_ratio': float(max(all_dii[sc['id']][c]['cut_in']['max_x_ratio'] for sc in scenarios)),
+                't_x_breach': float(sum(all_dii[sc['id']][c]['cut_in']['t_x_breach'] for sc in scenarios)),
+                'pct_x_breach': float(np.mean([all_dii[sc['id']][c]['cut_in']['pct_x_breach'] for sc in scenarios])),
+                'civi_x': float(np.mean([all_dii[sc['id']][c]['cut_in']['civi_x'] for sc in scenarios])),
+                'civi_x_score': float(np.mean([all_dii[sc['id']][c]['cut_in']['civi_x_score'] for sc in scenarios])),
+                't_headway_2s': float(sum(all_dii[sc['id']][c]['cut_in']['t_headway_2s'] for sc in scenarios)),
+                'pct_headway_2s': float(np.mean([all_dii[sc['id']][c]['cut_in']['pct_headway_2s'] for sc in scenarios])),
+                'max_headway': float(max(all_dii[sc['id']][c]['cut_in']['max_headway'] for sc in scenarios)),
+                'expected_cut_ins': float(sum(all_dii[sc['id']][c]['cut_in']['expected_cut_ins'] for sc in scenarios)),
+                'p_cut_in': float(max(all_dii[sc['id']][c]['cut_in']['p_cut_in'] for sc in scenarios)),
+                'leakage_ratio': float(np.mean([all_dii[sc['id']][c]['cut_in']['leakage_ratio'] for sc in scenarios])),
+            },
             'raw': {
                 'phantom_rate': float(np.mean([all_dii[sc['id']][c]['raw']['phantom_rate'] for sc in scenarios])),
                 'missed_rate': float(np.mean([all_dii[sc['id']][c]['raw']['missed_rate'] for sc in scenarios])),
@@ -871,6 +1068,12 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
                 'collisions': int(sum(all_dii[sc['id']][c]['raw']['collisions'] for sc in scenarios)),
                 'min_gap': float(min(all_dii[sc['id']][c]['raw']['min_gap'] for sc in scenarios)),
                 'mean_gap': float(np.mean([all_dii[sc['id']][c]['raw']['mean_gap'] for sc in scenarios])),
+                'max_gap': float(max(all_dii[sc['id']][c]['cut_in']['max_gap'] for sc in scenarios)),
+                'max_x_ratio': float(max(all_dii[sc['id']][c]['cut_in']['max_x_ratio'] for sc in scenarios)),
+                't_x_breach': float(sum(all_dii[sc['id']][c]['cut_in']['t_x_breach'] for sc in scenarios)),
+                'civi_x': float(np.mean([all_dii[sc['id']][c]['cut_in']['civi_x'] for sc in scenarios])),
+                't_headway_2s': float(sum(all_dii[sc['id']][c]['cut_in']['t_headway_2s'] for sc in scenarios)),
+                'p_cut_in': float(max(all_dii[sc['id']][c]['cut_in']['p_cut_in'] for sc in scenarios)),
             }
         }
 
@@ -914,7 +1117,25 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
         print(f"{c_label:<18} | {m['DII']:6.1f} | {m['C1']:5.2f} | {m['C2']:5.2f} | {m['C3']:5.2f} | {m['C4']:5.2f} | {m['rear_decoupling']:8.2f} | {r['rms_jerk']:8.2f} | {r['sign_changes_per_min']:7.1f} | {r['wave_ratio']:6.2f} | {r['min_gap']:6.2f}m")
     print("=" * 96)
 
-    # Print IDM Comparison Table (Primary: Gap-Matched IDM)
+    # Print Overall Cut-In & X-Factor Benchmark Table
+    print("\n" + "=" * 96)
+    print(" OVERALL CUT-IN VULNERABILITY & X-FACTOR BENCHMARK SUMMARY")
+    print(" (Evaluates forward gap ballooning against dynamic kinematic envelope X = G_front + Le + G_rear)")
+    print("=" * 96)
+    print(f"{'Controller':<18} | {'MaxGap':>7} | {'Peak s_f/X':>10} | {'Total T(s_f>X)':>14} | {'Mean CIVI_X':>11} | {'Total Hw>2s':>11} | {'Peak Cut-In %':>13} | {'Leakage':>7}")
+    print("-" * 96)
+    for c in ['ACC', 'BCC', 'ACC+BCC', 'RL', 'IDM_gap_matched', 'IDM_default']:
+        ci = overall_dii[c]['cut_in']
+        if c == 'RL':
+            c_label = 'RL (TD3)'
+        elif c == 'IDM_gap_matched':
+            c_label = 'IDM (Gap-Ref)'
+        elif c == 'IDM_default':
+            c_label = 'IDM (Default)'
+        else:
+            c_label = c
+        print(f"{c_label:<18} | {ci['max_gap']:6.1f}m | {ci['max_x_ratio']:9.2f}x | {ci['t_x_breach']:13.1f}s | {ci['civi_x']:11.3f} | {ci['t_headway_2s']:10.1f}s | {ci['p_cut_in']:12.1f}% | {ci['leakage_ratio']:7.2f}")
+    print("=" * 96)
     print("\n" + "=" * 90)
     print(" IDM HUMAN REFERENCE COMPARISON SUMMARY (vs Gap-Matched IDM Reference)")
     print("=" * 90)
@@ -978,6 +1199,7 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
 
         # Generate plots
         generate_dii_plots(all_dii, scenarios)
+        generate_cut_in_plots(all_dii, scenarios)
         generate_idm_plots(idm_comp_gap_all, idm_comp_def_all, scenarios)
 
     return {
@@ -991,5 +1213,15 @@ def run_driver_intuitiveness_suite(model_path="td3_accel_agent.zip", scenarios=N
 
 
 if __name__ == '__main__':
-    target = sys.argv[1] if len(sys.argv) > 1 else "td3_accel_agent.zip"
-    run_driver_intuitiveness_suite(target)
+    import argparse
+    parser = argparse.ArgumentParser(description="Evaluate Driver Intuitiveness and IDM human similarity.")
+    parser.add_argument("model", nargs="?", default="td3_accel_agent.zip", help="Path to model file")
+    parser.add_argument("--delay", type=float, default=0.0, help="Perception delay in seconds")
+    parser.add_argument("--noise", type=float, default=0.0, help="Sensor noise std dev in meters")
+    args = parser.parse_args()
+
+    custom_sim = dict(DEFAULT_SIM_PARAMS)
+    custom_sim['sensor_delay'] = args.delay
+    custom_sim['sensor_noise'] = args.noise
+
+    run_driver_intuitiveness_suite(args.model, sim_params=custom_sim)

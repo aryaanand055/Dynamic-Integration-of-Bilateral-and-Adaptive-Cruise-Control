@@ -32,6 +32,8 @@ DEFAULT_SIM_PARAMS = {
     'min_a': -5.0,
     'min_gap': 2.0,
     'dt': 0.1,
+    'sensor_delay': 0.0,
+    'sensor_noise': 0.0,
 }
 
 def resolve_model_path(model_identifier: str = "td3_accel_agent.zip") -> str:

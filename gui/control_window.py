@@ -41,6 +41,8 @@ class ControlWindow:
             "min_a": -5.0,
             "min_gap": 2.0,
             "dt": 0.1,
+            "sensor_delay": 0.0,
+            "sensor_noise": 0.0,
         }
         self.entries = {}
 
@@ -191,6 +193,13 @@ class ControlWindow:
                 ("reaction_time", "Reaction Time"),
                 ("headway_time", "Headway Time"),
                 ("min_gap", "Collision Check Gap"),
+            ],
+        )
+        self._create_control_group(
+            title="Sensor Perception",
+            fields=[
+                ("sensor_delay", "Perception Delay (s)"),
+                ("sensor_noise", "Sensor Noise (m)"),
             ],
         )
 
@@ -427,14 +436,17 @@ class ControlWindow:
 
         self.dt = args[-1]  # Set self.dt from user input
 
+        sensor_delay = float(self.entries['sensor_delay'].get()) if 'sensor_delay' in self.entries else 0.0
+        sensor_noise = float(self.entries['sensor_noise'].get()) if 'sensor_noise' in self.entries else 0.0
+
         self.city_acc = City()
         self.city_bcc = City()
         self.city_accbcc = City()
 
         # Initialize cities with parameters for ACC and BCC models, including dt
-        self.city_acc.init(*args[:-1], dt=self.dt, model='ACC')
-        self.city_bcc.init(*args[:-1], dt=self.dt, model='BCC')
-        self.city_accbcc.init(*args[:-1], dt=self.dt, model='ACC+BCC')
+        self.city_acc.init(*args[:-1], dt=self.dt, model='ACC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+        self.city_bcc.init(*args[:-1], dt=self.dt, model='BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
+        self.city_accbcc.init(*args[:-1], dt=self.dt, model='ACC+BCC', sensor_delay=sensor_delay, sensor_noise=sensor_noise)
 
         # Update painters with new city elements
         self.painter_acc.set_elements(self.city_acc.roads, self.city_acc.cars)

@@ -17,10 +17,10 @@ class RLCity(City):
         # Let the standard heuristic compute accelerations for all cars
         super().driver_decision()
 
-        # Overwrite the acceleration for RL-controlled cars
+        # Overwrite the acceleration for RL-controlled cars (unless car is marked human/scripted)
         dt = self.dt
         for car in self.cars:
-            if getattr(car, 'is_rl', False) and hasattr(car, 'rl_action'):
+            if getattr(car, 'is_rl', False) and not getattr(car, 'is_human', False) and hasattr(car, 'rl_action'):
                 # Direct acceleration command from the RL model
                 target_acc = float(car.rl_action)
 

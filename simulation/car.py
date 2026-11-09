@@ -30,6 +30,7 @@ class Car:
         self.is_reckless = False
         self.is_human = False
         self.driver_type = 'ALGORITHM'
+        self.human_profile_name = None
         self.original_color = color
 
     def get_length(self):

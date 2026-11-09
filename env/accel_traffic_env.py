@@ -22,12 +22,12 @@ class AccelTrafficEnv(VecEnv):
     OBS_MEANS = np.zeros(7, dtype=np.float32)
     OBS_STDS  = np.array([5.0, 2.0, 10.0, 4.0, 10.0, 4.0, 0.5], dtype=np.float32)
 
-    def __init__(self):
+    def __init__(self, num_cars=15, max_steps=1000):
         self.city = RLCity()
         self.dt = 0.1
-        self.max_steps = 1000  # 100 seconds at dt=0.1
+        self.max_steps = max_steps  # 100 seconds at dt=0.1 by default
         self.current_step = 0
-        self.num_cars = 15
+        self.num_cars = num_cars
         
         # Base simulation parameters (aligned with GUI defaults)
         self.base_params = {
@@ -69,11 +69,12 @@ class AccelTrafficEnv(VecEnv):
         
         # Load ALL custom lead profiles from CSV files for training
         self.custom_profiles = []
+        self.highway_profiles = []
         import csv
         import os
         env_dir = os.path.dirname(os.path.abspath(__file__))
         project_dir = os.path.dirname(env_dir)
-        csv_files = ["data/data.csv", "data/data1.csv", "data/data2.csv"]
+        csv_files = ["data/data.csv", "data/data1.csv", "data/data2.csv", "data/highway_traffic.csv"]
         for csv_file in csv_files:
             csv_path = os.path.join(project_dir, csv_file)
             if os.path.exists(csv_path):
@@ -86,12 +87,32 @@ class AccelTrafficEnv(VecEnv):
                             v = float(row['velocity'])
                             profile.append((t, v))
                     if profile:
-                        self.custom_profiles.append(profile)
+                        if "highway_traffic.csv" in csv_file:
+                            self.highway_profiles.append(profile)
+                        else:
+                            self.custom_profiles.append(profile)
                         print(f"Loaded custom profile from {csv_file} ({len(profile)} points, "
                               f"{profile[0][1]:.1f}-{max(v for _,v in profile):.1f} m/s)")
                 except Exception as e:
                     print(f"Could not load {csv_file}: {e}")
-        print(f"Total custom profiles loaded: {len(self.custom_profiles)}")
+        print(f"Total custom profiles loaded: {len(self.custom_profiles)}, highway: {len(self.highway_profiles)}")
+        
+        # Scenario-Conditioned Domain Randomization (SCDR) runtime state
+        self.scenario_archetype = 'steady_cruise'
+        self.cut_in_active = False
+        self.cut_in_triggered = False
+        self.cut_in_step = -1
+        self.cut_in_gap = 0.0
+        self.cut_in_vel_delta = 0.0
+        
+        self.cut_out_active = False
+        self.cut_out_triggered = False
+        self.cut_out_step = -1
+        self.cut_out_gap_shift = 0.0
+        
+        self.tailgater_active = False
+        self.tailgater_step = -1
+        self.mixed_traffic_active = False
         
     def _randomize_params(self):
         """Domain randomization: vary parameters around GUI defaults each episode."""
@@ -107,6 +128,8 @@ class AccelTrafficEnv(VecEnv):
             'min_a': -5.0,
             'max_v': 35.0,
             'min_v': 0.0,
+            'sensor_delay': float(rng.choice([0.0, 0.0, 0.1, 0.2])),
+            'sensor_noise': float(rng.choice([0.0, 0.0, 0.05, 0.1])),
         }
     
     def _generate_lead_profile(self):
@@ -276,42 +299,109 @@ class AccelTrafficEnv(VecEnv):
         """Apply the velocity profile to the lead car via the city's built-in mechanism."""
         self.city.lead_velocity_profile = self.lead_profile
         
-    def reset(self):
+    SCENARIO_ARCHETYPES = [
+        'steady_cruise',                # 1. Steady Highway Cruise
+        'urban_stop_and_go',            # 2. Urban Stop-and-Go (data.csv)
+        'full_stop_queue',              # 3. Full Stop Queue & Re-launch (standstill hold)
+        'lead_emergency_braking',       # 4. Emergency Hard Braking (-4.5 to -5.0 m/s²)
+        'sinusoidal_wave',              # 5. Sinusoidal Traffic Waves (harmonic oscillation)
+        'lead_cut_in',                  # 6. Dynamic Lead Cut-In (step-drop in gap)
+        'lead_cut_out',                 # 7. Dynamic Lead Cut-Out (step-expansion in gap)
+        'aggressive_tailgater',         # 8. Aggressive Rear Tailgater (squeeze stress)
+        'speed_drop_recovery',          # 9. Highway Speed Drop & Recovery
+        'mixed_idm_traffic',            # 10. Mixed Heterogeneous Traffic (Human IDM)
+        'highway_empirical_highd',      # 11. Empirical High-Speed Highway Trajectory (highD)
+    ]
+
+    def reset(self, scenario_archetype=None):
         self.current_step = 0
         
         # Randomize parameters for this episode
         self._randomize_params()
         
-        # Mix training profiles across 6 operational domains:
-        # 1. 15% steady-state cruise (zero-oscillation flatline at v_des)
-        # 2. 25% full-stop queue hold & re-launch cycles (stop-and-go mastery)
-        # 3. 15% emergency hard braking from highway speed (-4.5 m/s^2 stops)
-        # 4. 15% harmonic wave oscillations (string-stability wave attenuation)
-        # 5. 15% highway speed drop & recovery (shockwave damping without over-braking)
-        # 6. 15% custom CSV profiles (data.csv urban stop-and-go disturbance)
+        # Reset runtime dynamic disturbance flags
+        self.cut_in_active = False
+        self.cut_in_triggered = False
+        self.cut_in_step = -1
+        self.cut_in_gap = 0.0
+        self.cut_in_vel_delta = 0.0
+        
+        self.cut_out_active = False
+        self.cut_out_triggered = False
+        self.cut_out_step = -1
+        self.cut_out_gap_shift = 0.0
+        
+        self.tailgater_active = False
+        self.tailgater_step = -1
+        self.mixed_traffic_active = False
+
         rng = np.random.default_rng()
-        prob = rng.random()
-        if prob < 0.15:
+        if scenario_archetype is not None and scenario_archetype in self.SCENARIO_ARCHETYPES:
+            self.scenario_archetype = scenario_archetype
+        else:
+            self.scenario_archetype = str(rng.choice(self.SCENARIO_ARCHETYPES))
+            
+        # Configure lead profile and dynamic triggers for the chosen archetype
+        if self.scenario_archetype == 'steady_cruise':
             self.lead_profile = [
                 (0.0, self.sim_params['v_des']),
                 (self.max_steps * self.dt, self.sim_params['v_des'])
             ]
-        elif prob < 0.35:
+        elif self.scenario_archetype == 'urban_stop_and_go':
+            if self.custom_profiles:
+                idx = rng.integers(0, len(self.custom_profiles))
+                self.lead_profile = self.custom_profiles[idx]
+                max_v_in_profile = max(v for _, v in self.lead_profile)
+                self.sim_params['v_des'] = max(max_v_in_profile, 5.0)
+            else:
+                self.lead_profile = self._generate_lead_profile()
+        elif self.scenario_archetype == 'full_stop_queue':
             self.lead_profile = self._generate_full_stop_profile()
-        elif prob < 0.55:
+        elif self.scenario_archetype == 'lead_emergency_braking':
             self.lead_profile = self._generate_emergency_brake_profile()
-        elif prob < 0.70:
+        elif self.scenario_archetype == 'sinusoidal_wave':
             self.lead_profile = self._generate_wave_profile()
-        elif prob < 0.85:
+        elif self.scenario_archetype == 'lead_cut_in':
+            self.lead_profile = [
+                (0.0, self.sim_params['v_des']),
+                (self.max_steps * self.dt, self.sim_params['v_des'])
+            ]
+            self.cut_in_active = True
+            self.cut_in_step = int(rng.integers(150, 450))
+            self.cut_in_gap = float(rng.uniform(4.0, 8.5))
+            self.cut_in_vel_delta = float(rng.uniform(-2.5, 1.5))
+        elif self.scenario_archetype == 'lead_cut_out':
+            self.lead_profile = [
+                (0.0, self.sim_params['v_des']),
+                (self.max_steps * self.dt, self.sim_params['v_des'])
+            ]
+            self.cut_out_active = True
+            self.cut_out_step = int(rng.integers(150, 450))
+            self.cut_out_gap_shift = float(rng.uniform(35.0, 55.0))
+        elif self.scenario_archetype == 'aggressive_tailgater':
+            self.lead_profile = [
+                (0.0, self.sim_params['v_des']),
+                (self.max_steps * self.dt, self.sim_params['v_des'])
+            ]
+            self.tailgater_active = True
+            self.tailgater_step = int(rng.integers(100, 300))
+        elif self.scenario_archetype == 'speed_drop_recovery':
             self.lead_profile = self._generate_speed_drop_profile()
-        elif self.custom_profiles:
-            idx = rng.integers(0, len(self.custom_profiles))
-            self.lead_profile = self.custom_profiles[idx]
-            max_v_in_profile = max(v for _, v in self.lead_profile)
-            self.sim_params['v_des'] = max(max_v_in_profile, 5.0)
+        elif self.scenario_archetype == 'mixed_idm_traffic':
+            self.lead_profile = self._generate_wave_profile()
+            self.mixed_traffic_active = True
+        elif self.scenario_archetype == 'highway_empirical_highd':
+            if self.highway_profiles:
+                self.lead_profile = self.highway_profiles[0]
+                max_v_in_profile = max(v for _, v in self.lead_profile)
+                self.sim_params['v_des'] = max(max_v_in_profile, 5.0)
+            elif self.custom_profiles:
+                self.lead_profile = self.custom_profiles[-1]
+            else:
+                self.lead_profile = self._generate_lead_profile()
         else:
             self.lead_profile = self._generate_lead_profile()
-        
+
         self.city.init(
             self.num_cars,
             self.sim_params['kd'],
@@ -327,16 +417,38 @@ class AccelTrafficEnv(VecEnv):
             self.sim_params['min_a'],
             2.0,  # min_gap
             self.dt,
-            model='ACC'  # Base model for the lead car's heuristic fallback
+            model='ACC',  # Base model for the lead car's heuristic fallback
+            sensor_delay=self.sim_params.get('sensor_delay', 0.0),
+            sensor_noise=self.sim_params.get('sensor_noise', 0.0)
         )
         
         # Lead car (index 0): NOT RL-controlled, follows velocity profile
         self.city.cars[0].is_rl = False
         
-        # Follower cars (index 1..N-1): RL-controlled
+        # Follower cars (index 1..N-1): RL-controlled by default
         for car in self.city.cars[1:]:
             car.is_rl = True
             car.rl_action = 0.0
+
+        # Mixed traffic: randomly configure 1 or 2 follower cars as human IDM drivers
+        if self.mixed_traffic_active and len(self.city.cars) > 3:
+            num_humans = int(rng.choice([1, 2]))
+            candidate_indices = list(range(2, len(self.city.cars) - 1))
+            chosen = rng.choice(candidate_indices, size=min(num_humans, len(candidate_indices)), replace=False)
+            for h_idx in chosen:
+                h_car = self.city.cars[h_idx]
+                h_car.is_human = True
+                h_car.is_rl = False
+                h_car.driver_type = 'HUMAN'
+                h_car.color = '#10b981'
+                h_car.human_profile = {
+                    'a_max': float(rng.uniform(1.2, 2.2)),
+                    'b': float(rng.uniform(1.5, 2.5)),
+                    'T': float(rng.uniform(0.8, 1.6)),
+                    's0': float(rng.uniform(2.5, 5.0)),
+                    'delta': 4.0,
+                    'v0': float(self.sim_params['v_des'])
+                }
         
         # Apply the lead car's velocity profile
         self._apply_lead_profile()
@@ -347,13 +459,74 @@ class AccelTrafficEnv(VecEnv):
         self.in_collision = np.zeros(self.num_rl_cars, dtype=bool)
         return self._get_obs()
 
+    def _trigger_cut_in(self):
+        """
+        Simulate an adjacent vehicle cutting in directly ahead of Car 1.
+        Shifts Car 0's position closer to Car 1 to an insertion gap s_cut in [4.0, 8.5] m,
+        and assigns an insertion velocity v_cut = v1 + delta_v.
+        This injects an instantaneous downward step-discontinuity in Car 1's forward radar observation.
+        """
+        if len(self.city.cars) < 2:
+            return
+        road_length = self.city.roads[0].length if self.city.roads else 1000
+        car1 = self.city.cars[1]
+        car0 = self.city.cars[0]
+        s_cut = self.cut_in_gap
+        car0.pos = (car1.pos - s_cut - car0.length) % road_length
+        car0.velocity = max(2.0, min(self.sim_params['max_v'] - 2.0, car1.velocity + self.cut_in_vel_delta))
+        car0.acceleration = float(np.random.default_rng().uniform(-2.5, 0.5))
+        self.cut_in_triggered = True
+
+    def _trigger_cut_out(self):
+        """
+        Simulate the lead vehicle cutting out (departing into an exit or adjacent lane).
+        Shifts Car 0's position forward by cut_out_gap_shift (35 to 55 m),
+        instantly expanding Car 1's forward radar gap and testing smooth gap closure.
+        """
+        if len(self.city.cars) < 2:
+            return
+        road_length = self.city.roads[0].length if self.city.roads else 1000
+        car0 = self.city.cars[0]
+        car0.pos = (car0.pos - self.cut_out_gap_shift) % road_length
+        car0.velocity = min(self.sim_params['max_v'] - 2.0, car0.velocity + 3.0)
+        self.cut_out_triggered = True
+
+    def _update_tailgater(self):
+        """
+        Simulates an aggressive trailing vehicle behind the platoon.
+        Car N-1 surges forward at high velocity to apply forward squeeze pressure on follower cars.
+        """
+        if len(self.city.cars) < 3:
+            return
+        last_car = self.city.cars[-1]
+        last_car.is_rl = False
+        last_car.is_reckless = True
+        last_car.color = '#ef4444'
+        target_v = min(self.sim_params['max_v'], self.sim_params['v_des'] + 6.0)
+        acc = self.sim_params['kc'] * (target_v - last_car.velocity)
+        acc = max(self.sim_params['min_a'], min(self.sim_params['max_a'], acc))
+        last_car.acceleration = acc
+
     def step_async(self, actions):
         self.actions = actions
 
     def step_wait(self):
         self.current_step += 1
         
-        acts = np.array(self.actions).flatten()
+        # Check dynamic mid-episode scenario triggers
+        if self.cut_in_active and not self.cut_in_triggered and self.current_step >= self.cut_in_step:
+            self._trigger_cut_in()
+            
+        if self.cut_out_active and not self.cut_out_triggered and self.current_step >= self.cut_out_step:
+            self._trigger_cut_out()
+            
+        if self.tailgater_active and self.current_step >= self.tailgater_step:
+            self._update_tailgater()
+            
+        if hasattr(self, 'actions') and self.actions is not None:
+            acts = np.array(self.actions).flatten()
+        else:
+            acts = np.zeros(self.num_rl_cars, dtype=np.float32)
         
         # Track action rate of change (delta) to heavily penalize chattering
         self.action_deltas = np.abs(acts[:self.num_rl_cars] - self.prev_action)
@@ -362,8 +535,11 @@ class AccelTrafficEnv(VecEnv):
         # Save previous accelerations for jerk calculation in rewards
         self.prev_accel = np.array([c.acceleration for c in self.city.cars]) if self.city.cars else np.zeros(self.num_cars)
         
-        # Apply RL actions to FOLLOWER cars only (indices 1..N-1)
+        # Apply RL actions to FOLLOWER cars only (indices 1..N-1), preserving human or reckless cars
         for i, car in enumerate(self.city.cars[1:]):
+            if getattr(car, 'is_human', False) or getattr(car, 'is_reckless', False):
+                car.is_rl = False
+                continue
             if i < len(acts):
                 car.is_rl = True
                 car.rl_action = float(acts[i])
@@ -396,7 +572,7 @@ class AccelTrafficEnv(VecEnv):
         """
         Build normalized observations for FOLLOWER cars only (indices 1..N-1).
         Used by environment, GUI, and headless evaluation for 100% mathematical consistency.
-        Features: [ego_vel, ego_accel, front_gap, front_rel_vel, back_gap, back_rel_vel, v_des]
+        Features: [vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]
         """
         cars = city.cars
         if not cars or len(cars) <= 1:
@@ -407,10 +583,16 @@ class AccelTrafficEnv(VecEnv):
         obs_array = np.zeros((num_followers, 7), dtype=np.float32)
         lead_car = cars[0]
         MAX_RADAR_RANGE = 70.0  # Max realistic radar sensing range in meters
+
+        perceived_states = city.get_perceived_car_states() if hasattr(city, 'get_perceived_car_states') else [(c.pos, c.velocity) for c in cars]
         
         for obs_idx, car in enumerate(cars[1:]):
             if getattr(car, 'has_exited', False):
                 continue
+            car_idx = obs_idx + 1
+            ego_pos, ego_vel = perceived_states[car_idx]
+            ego_accel = car.acceleration
+
             cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car and not getattr(c, 'has_exited', False)]
             
             def gap_to(other):
@@ -424,19 +606,19 @@ class AccelTrafficEnv(VecEnv):
             front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
             back_car = min(cars_same_road, key=gap_from, default=None) if cars_same_road else None
             
-            ego_vel = car.velocity
-            ego_accel = car.acceleration
-            
             min_dis = getattr(city, 'min_dis', 6.0)
             reaction_time = getattr(city, 'reaction_time', 0.8)
             desired_gap = min_dis + ego_vel * reaction_time
 
             if front_car:
-                front_gap = (car.pos - front_car.pos - front_car.length) % road_length
-                front_rel_vel = front_car.velocity - ego_vel
+                front_idx = cars.index(front_car)
+                front_pos, front_vel = perceived_states[front_idx]
+                front_gap = (ego_pos - front_pos - front_car.length) % road_length
+                front_rel_vel = front_vel - ego_vel
             else:
                 front_gap = MAX_RADAR_RANGE
                 front_rel_vel = 0.0
+                front_vel = v_des
             front_gap = min(front_gap, MAX_RADAR_RANGE)
             
             # Dynamic Kinematic Cushion: expands desired headway when rapidly closing in
@@ -449,12 +631,14 @@ class AccelTrafficEnv(VecEnv):
             rel_gap_ratio_err = float(np.clip(raw_gap_err / max(effective_desired_gap, 1.0), -1.0, 1.0))
             
             # Bilateral Rear Car Sensing:
-            desired_back_gap = min_dis + (back_car.velocity if back_car else ego_vel) * reaction_time
+            desired_back_gap = min_dis + (perceived_states[cars.index(back_car)][1] if back_car else ego_vel) * reaction_time
             if back_car and back_car != lead_car and not getattr(back_car, 'has_exited', False):
-                back_gap_raw = (back_car.pos - car.pos - car.length) % road_length
+                back_idx = cars.index(back_car)
+                back_pos, back_vel = perceived_states[back_idx]
+                back_gap_raw = (back_pos - ego_pos - car.length) % road_length
                 if back_gap_raw <= MAX_RADAR_RANGE:
                     back_gap = back_gap_raw
-                    back_rel_vel = back_car.velocity - ego_vel
+                    back_rel_vel = back_vel - ego_vel
                 else:
                     back_gap = desired_back_gap
                     back_rel_vel = 0.0
@@ -465,16 +649,16 @@ class AccelTrafficEnv(VecEnv):
             back_gap_err = float(np.clip(back_gap - desired_back_gap, -15.0, 15.0))
             
             # Adaptive Target Velocity: smoothly blends to slower lead vehicle in radar range
-            if front_car and front_car.velocity < v_des:
+            if front_car and front_vel < v_des:
                 blend_start = effective_desired_gap
                 blend_end = max(effective_desired_gap * 2.5, 25.0)
                 if front_gap <= blend_start:
-                    effective_v_des = front_car.velocity
+                    effective_v_des = front_vel
                 elif front_gap >= blend_end:
                     effective_v_des = v_des
                 else:
                     w = (front_gap - blend_start) / (blend_end - blend_start)
-                    effective_v_des = (1.0 - w) * front_car.velocity + w * v_des
+                    effective_v_des = (1.0 - w) * front_vel + w * v_des
             else:
                 effective_v_des = v_des
             vel_err = float(np.clip(ego_vel - effective_v_des, -10.0, 10.0))

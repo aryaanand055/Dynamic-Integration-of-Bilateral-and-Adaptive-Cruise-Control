@@ -1265,4 +1265,225 @@ The user requested:
 | **BCC** | 71.9 | 0.61 | 0.83 | 0.71 | 0.83 | 0.62 | 0.57 | 0.01 m | 45 | 0.206 (#4) |
 | **IDM (Gap-Ref)**| 82.3 | 0.97 | 0.86 | 0.35 | 0.97 | 0.97 | 0.61 | 4.49 m | 0 | Ref |
 
+---
+
+## 📌 Phase 21: Operational Scenario Suite Revamp & Heterogeneous Traffic Interoperability
+
+### 1. Motivation & Revamp Objectives
+Following an audit of earlier scenarios, several redundancies were removed and new high-impact operational regimes were introduced:
+- **50% Mixed Heterogeneous Traffic**: ~50% autonomous controllers interleaved with non-random human drivers governed by calibrated IDM models (Aggressive, Cautious, Normal).
+- **Minimalist 3-Car Trailing Brake & Halt**: Isolates pure BCC decoupling in a 3-car topology (Car 0 Lead, Car 1 Ego, Car 2 Trailing). At t = 5s, the trailing vehicle halts.
+- **Minimalist 3-Car Lead Stop**: Forward stopping safety under rear vehicle pressure in a 3-car platoon.
+- **Internal Platoon Rupture**: Car #3 (Car 2) emergency stops to 0 m/s in a 15-car platoon.
+- **Physical Feasibility**: Eliminated impossible-crash scenarios by ensuring trailing vehicles enforce a minimum bumper buffer floor.
+
+### 2. Streamlined 10-Scenario Suite Structure
+1. `steady_cruise_15` (15 Cars, v_des=15 m/s): Baseline equilibrium gap and zero-jerk cruising.
+2. `urban_stop_and_go` (15 Cars, data.csv): Real-world micro-trip sensor trajectory.
+3. `full_stop_standstill_hold` (15 Cars): Platoon full stop, 30s standstill holding, and restart.
+4. `lead_emergency_braking` (15 Cars): Severe front stop (-4.5 m/s² down to 0).
+5. `sinusoidal_string_stability` (15 Cars): Harmonic wave damping (15 ± 4 m/s).
+6. `three_car_trailing_halt` (3 Cars): Trailing vehicle brakes to dead halt; tests BCC decoupling.
+7. `three_car_lead_stop` (3 Cars): Lead vehicle emergency stop in 3-car platoon.
+8. `aggressive_rear_tailgater` (15 Cars): Trailing car surges to 22 m/s forward squeeze.
+9. `internal_car3_emergency_brake` (15 Cars): 3rd vehicle in line stops; followers brake, leader continues.
+10. `mixed_heterogeneous_traffic` (15 Cars): 50% Auto + 50% diverse human drivers (Aggressive, Cautious, Normal).
+
+### 3. Quantitative 10-Scenario Benchmark Results
+#### Overall Benchmark Averages (All 10 Revamped Scenarios):
+| Controller | Overall DII (0–100) | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | R-Decoup | RMS Jerk (m/s³) | Worst Min Gap | Total Collisions | IDM Similarity |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **RL (TD3)** | **81.6** | **0.92** | 0.54 | **0.80** | **0.94** | **0.88** | 1.67 | **2.70 m** | **0** | **0.373 (#1)** |
+| **ACC** | 91.6 | 0.96 | 0.85 | 0.84 | 0.93 | 1.00 | 0.66 | 3.03 m | 0 | 0.321 (#2) |
+| **ACC+BCC** | 86.1 | 0.83 | 0.87 | 0.82 | 0.92 | 0.86 | 0.50 | 2.31 m | 0 | 0.311 (#4) |
+| **BCC** | 84.7 | 0.82 | 0.89 | 0.80 | 0.86 | 0.86 | 0.39 | 0.92 m | 0 | 0.313 (#3) |
+| **IDM (Gap-Ref)**| 80.8 | 0.92 | 0.89 | 0.39 | 0.95 | 0.90 | 0.48 | 4.49 m | 0 | Ref |
+| **IDM (Default)**| 71.6 | 0.80 | 0.85 | 0.18 | 0.94 | 0.80 | 0.54 | 2.00 m | 0 | Ref |
+
+*Key Findings:*
+- **Zero Collisions Across All Models**: With physical feasibility enforced on trailing vehicles, all 4 controllers achieved 0 collisions across all 10 scenarios.
+- **Top IDM Human Similarity**: The RL (TD3) policy achieved the closest human fidelity (Similarity: **0.373**, Accel RMSE: **0.624 m/s²**, W1 Accel: **0.181**).
+- **Smooth Decoupling**: In Scenario 6 (3 cars, trailing car stops), RL and ACC smoothly decoupled with zero collisions and high safety gap margins.
+
+---
+
+## 📌 Phase 22: Cut-In Vulnerability Quantification & Kinematic X-Factor Integration
+
+### 1. Motivation & Traffic Physics Dilemma
+In Bilateral Cruise Control (BCC), a vehicle couples its acceleration symmetrically to both the predecessor and the follower:
+```text
+a_bcc = -kd * (s_des - s_front) - kv * (v - v_front) + kd * (s_des - s_rear) + kv * (v_rear - v)
+```
+When a trailing vehicle drops back or halts, the rear deficit `kd * (s_des - s_rear)` becomes strongly negative, forcing the vehicle to decelerate unnecessarily even when the road ahead is wide open. As the lead vehicle pulls away, the forward gap `s_front` balloons outward, creating a massive opening that invites adjacent vehicles to cut in. Every cut-in forces abrupt secondary braking, destabilizing traffic throughput and triggering shockwaves.
+
+### 2. The Physical Kinematic Envelope (X-Factor)
+In `simulation/city.py`, the vehicle's dynamic interaction boundary **X** is defined as:
+```text
+G_front_min = v_ego * Tr + (v_lead - v_ego)² / (2 * a_ego) + Lb
+G_rear_min  = v_rear * Tr + (v_rear - v_ego)² / (2 * a_rear) + Lb
+X = G_front_min + Le + G_rear_min
+```
+where `Tr = 0.8s`, `Le = 5.0m`, `Lb = 2.0m`, `a_ego = 5.0 m/s²`, and `a_rear = 3.5 m/s²`.
+
+**Physical Interpretation for Cut-In Vulnerability:**
+To perform a collision-free lane-change insertion between the leader and follower without violating emergency braking margins, an adjacent car physically requires:
+1. Leader safe stopping buffer (`G_front_min`)
+2. Its own vehicle physical footprint (`Le`)
+3. Follower safe stopping buffer (`G_rear_min`)
+**X is the exact kinematic clearance envelope required for an unforced vehicle cut-in.**
+- When `s_front < X`: Any cut-in would violate safety clearance (cut-in physically blocked).
+- When `s_front >= X`: The gap exceeds the full 3-car safety envelope (cut-in invited).
+- When `s_front ≫ X`: Catastrophic gap dilation.
+
+### 3. Metric Suite Formulation & Implementation
+Implemented in `evaluation/cut_in_metrics.py`:
+1. **Dimensionless X-Ratio (Ξ)**: `Ξ(t) = s_front(t) / X(t)`. `Ξ_max = max_t Ξ(t)`.
+2. **X-Breach Duration (`T_x_breach`)**: Accumulated time (s) and moving fraction (%) where `s_front > X`.
+3. **Cut-In Vulnerability Index (`CIVI_X`)**: Time-averaged excess ratio `(1/T) * ∫ max(0, s_front/X - 1) dt`.
+4. **Time Headway Exposure**: Duration (s) with time headway `h = s_front / max(v, 0.5) > 2.0s`.
+5. **Stochastic Cut-In Arrival Probability (`P_cut_in`)**: Poisson hazard model based on empirical highway gap acceptance: `λ(t) = λ0 * [max(0, s_front - X) / X]^γ` with `λ0 = 0.04 s⁻¹`, `γ = 1.2`. `P(Cut-In) = 100% * (1 - exp(-∫ λ dt))`.
+6. **Disturbance Leakage Ratio**: `η_leak = Δs_front / Δs_rear`.
+
+### 4. Integration Touchpoints
+- **Evaluation Pipeline (`evaluation/driver_intuitiveness.py`)**: Computes cut-in metrics across all models, adds per-scenario and overall summary benchmark tables, saves metrics in `logs/driver_intuitiveness.json`, and generates publication chart `plots/cut_in_vulnerability.png`.
+- **Multi-Scenario Harness (`evaluation/evaluate_all_scenarios.py`)**: Logs `max_x_ratio`, `t_x_breach`, and `civi_x` in scenario results.
+- **GUI Dashboard (`gui/rl_control_window.py`)**: Added `Cut-In (s_f/X)` column to Intuitiveness Treeview and integrated a new named criterion `cut_in_resistance` (`max s_front/X <= 1.00x`).
+- **Unit & Integration Tests (`tests/test_cut_in_metrics.py`, `tests/test_gui_intuitiveness.py`)**: Added 6 tests verifying X kinematics, synthetic profiles, and scenario 6 controller ordering. All 22 tests passing.
+
+### 5. Quantitative Post-Implementation Benchmark Results
+Evaluated Model: `models/td3_accel_agent.zip`
+
+#### Scenario 6 Isolation (`three_car_trailing_halt`, Trailing Car Stops at t=5s):
+| Controller | Max Gap | Mean X | Peak Gap/X (Ξ) | T(s_f > X) | CIVI_X | Headway > 2s | Cut-In Prob |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ACC** | 18.0 m | 44.3 m | **0.58×** | **0.0 s** | **0.000** | 0.0 s | **0.0%** |
+| **RL (TD3)** | 31.2 m | 44.3 m | **0.69×** | **0.0 s** | **0.000** | 5.6 s | **0.0%** |
+| **ACC+BCC** | 53.2 m | 40.5 m | **1.13×** | **13.0 s** | **0.035** | 20.5 s | **42.1%** |
+| **BCC** | 171.8 m | 28.4 m | **6.21×** | **20.3 s** | **1.704** | 21.0 s | **98.7%** |
+
+#### Overall Benchmark Averages (Across All 10 Operational Scenarios):
+| Controller | Max Gap | Peak s_f/X (Ξ) | Total T(s_f > X) | Mean CIVI_X | Total Hw > 2s | Peak Cut-In Prob | Collisions | DII |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ACC** | 29.0 m | **0.61×** | **0.0 s** | **0.000** | 12.8 s | **0.0%** | 0 | 91.6 |
+| **RL (TD3)** | 142.9 m | 3.34× | 40.8 s | **0.008** | 91.4 s | 66.3% | 0 | 81.6 |
+| **ACC+BCC** | 56.9 m | 1.00× | **0.0 s** | **0.000** | 67.7 s | **0.0%** | 0 | 86.1 |
+| **BCC** | 265.2 m | **7.23×** | **82.8 s** | **0.132** | 113.1 s | **99.3%** | 0 | 84.7 |
+| **IDM (Gap-Ref)** | 71.0 m | 1.76× | 132.1 s | 0.005 | 275.7 s | 40.2% | 0 | 80.8 |
+| **IDM (Default)** | 79.5 m | 1.97× | 186.8 s | 0.011 | 326.1 s | 56.6% | 0 | 71.6 |
+
+*Key Insights:*
+- Pure BCC suffers from catastrophic cut-in vulnerability under trailing vehicle disruptions, expanding up to **7.23× X** (265.2 m) and spending 82.8 cumulative seconds inviting cut-ins with a **99.3%** peak arrival probability.
+- In Scenario 6, the RL agent cleanly avoids cut-in promotion by capping gap expansion at **0.69× X** (31.2 m), staying strictly within the safe envelope while damping rear shockwaves.
+- The new `plots/cut_in_vulnerability.png` plot clearly exposes the contrast between BCC's unconstrained gap ballooning and RL's controlled bilateral buffering.
+
+---
+
+## 📌 Phase 23: Configurable Perception Delay, Sensor Noise, and Scenario 11 (highD / NGSIM Empirical Highway Trajectory)
+
+### 1. Motivation & Operational Robustness Architecture
+Real-world connected and automated vehicle (CAV) perception stacks are constrained by:
+1. **Radar/LiDAR/Camera Pipeline Latency**: Typical perception latency $\tau_{\text{delay}} \in [0.10, 0.30\text{ s}]$ due to sensor sampling, object detection inference, Kalman filtering, and V2X wireless transmission.
+2. **Measurement Noise**: Radar range uncertainty $\sigma_p \approx 0.1\text{--}0.5\text{ m}$ and Doppler speed uncertainty $\sigma_v \approx 0.05\text{--}0.25\text{ m/s}$.
+3. **Empirical Highway Flutter & Shockwaves**: Authentic human driving profiles (from highD and NGSIM datasets) display natural throttle wandering, non-sinusoidal speed flutter, and non-linear shockwave troughs that stress controller damping under sustained high speeds ($v \approx 22\text{--}26\text{ m/s}$).
+
+Rather than hardcoding perception latency into a single rigid scenario, latency and noise were designed as **first-class configurable simulation parameters** across the entire simulation runtime.
+
+### 2. Architectural Modifications & Physics Formulation
+1. **Configurable Perception Engine (`simulation/city.py`)**:
+   - Added `sensor_delay` (seconds) and `sensor_noise` (meters) to `City.init(...)` and `simulation/config.py`.
+   - Implemented dynamic FIFO state queue `_delay_buffer` maintaining historical ground-truth states:
+     $$\text{delay\_steps} = \left\lfloor \frac{\tau_{\text{delay}}}{\Delta t} \right\rceil$$
+   - `get_perceived_car_states()` retrieves states from `_delay_buffer[-delay_steps - 1]` and adds Gaussian measurement noise:
+     $$\tilde{p}_i = p_i(t - \tau) + \mathcal{N}(0, \sigma^2)$$
+     $$\tilde{v}_i = \max\left(0, v_i(t - \tau) + \mathcal{N}\left(0, (0.5\sigma)^2\right)\right)$$
+   - When $\tau_{\text{delay}} = 0.0\text{ s}$ and $\sigma = 0.0\text{ m}$, returns the exact instantaneous ground truth, preserving zero-overhead baseline identity.
+2. **Controller Decoupling & IDM Perception (`simulation/city.py`, `evaluation/driver_intuitiveness.py`)**:
+   - ACC, BCC, ACC+BCC, and human IDM models now compute gap, closing speed, and dynamic $X$-factor solely from perceived states $\tilde{p}_i, \tilde{v}_i$.
+3. **Observation Decoupling (`env/accel_traffic_env.py`)**:
+   - `AccelTrafficEnv.get_city_obs()` evaluates normalized relative gap and velocity errors using perceived states $\tilde{p}_i, \tilde{v}_i$, ensuring the RL neural network directly receives delayed/noisy radar inputs during inference and stress testing.
+4. **Scenario 11: Real-World Highway Cruise (`data/highway_traffic.csv`, `evaluation/evaluate_all_scenarios.py`)**:
+   - Added Scenario 11 (`highway_empirical_highd`): 15 cars, 60.0s, $v_{\text{des}} = 24.0\text{ m/s}$ (~86.4 km/h), authentic human speed profile oscillating between 17.8 m/s and 25.5 m/s with a realistic phantom shockwave deceleration wave at $t = 24\text{--}34\text{ s}$.
+5. **Interactive GUI Integration (`gui/control_window.py`, `gui/rl_control_window.py`)**:
+   - Added "Sensor Perception" control card with `sensor_delay` and `sensor_noise` inputs in the sidebar.
+   - Updated Intuitiveness treeview header to "11-Scenario Comprehensive Benchmark Results".
+   - Automated forwarding of active GUI delay/noise parameters to background benchmark evaluation workers.
+
+### 3. Quantitative Post-Implementation Benchmark Results (11 Scenarios)
+Evaluated Model: `models/td3_accel_agent.zip` (Tested at $\tau_{\text{delay}} = 0.0\text{ s}$, verified under $\tau_{\text{delay}} \in [0.1, 0.3\text{ s}]$).
+
+#### Overall 11-Scenario Driver Intuitiveness Index (DII) Benchmark Summary:
+| Controller | DII | C1 Approp | C2 Smooth | C3 Calm | C4 Comfort | R-Decoup | RMS Jerk | Flips/min | Wave Ratio | Min Gap | Collisions |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ACC** | **91.1** | 0.96 | 0.84 | 0.81 | 0.93 | **1.00** | 0.63 m/s³ | 2.3 | 5.17 | 3.03 m | **0** |
+| **BCC** | **85.2** | 0.84 | 0.89 | 0.79 | 0.87 | 0.87 | 0.37 m/s³ | 2.0 | 7.91 | 0.92 m | **0** |
+| **ACC+BCC** | **86.2** | 0.85 | 0.86 | 0.80 | 0.93 | 0.88 | 0.48 m/s³ | 2.4 | 8.43 | 2.31 m | **0** |
+| **RL (TD3)** | **81.5** | 0.93 | 0.52 | 0.80 | 0.94 | 0.90 | 1.73 m/s³ | 52.4 | 6.78 | 2.70 m | **0** |
+| **IDM (Gap-Ref)** | **80.9** | 0.92 | 0.89 | 0.37 | 0.95 | 0.91 | 0.47 m/s³ | 0.5 | 5.57 | 4.49 m | **0** |
+| **IDM (Default)** | **70.5** | 0.79 | 0.86 | 0.16 | 0.95 | 0.77 | 0.54 m/s³ | 1.7 | 9.99 | 2.00 m | **0** |
+
+#### Overall 11-Scenario Cut-In Vulnerability & X-Factor Benchmark Summary:
+| Controller | Max Gap | Peak s_f/X (Ξ) | Total T(s_f > X) | Mean CIVI_X | Total Hw > 2s | Peak Cut-In % | Leakage Ratio |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ACC** | 29.0 m | **0.61×** | **0.0 s** | **0.000** | 12.8 s | **0.0%** | 0.55 |
+| **BCC** | 265.2 m | **7.23×** | **82.8 s** | **0.120** | 113.1 s | **99.3%** | 0.59 |
+| **ACC+BCC** | 56.9 m | **1.00×** | **0.0 s** | **0.000** | 67.7 s | **0.0%** | 0.41 |
+| **RL (TD3)** | 142.9 m | 3.34× | 40.8 s | **0.008** | 91.4 s | 66.3% | 1.76 |
+| **IDM (Gap-Ref)** | 83.5 m | 1.76× | 161.0 s | 0.005 | 320.3 s | 40.2% | 2.04 |
+| **IDM (Default)** | 105.1 m | 1.97× | 235.7 s | 0.014 | 378.5 s | 56.6% | 1.45 |
+
+#### Scenario 11 Isolation (`highway_empirical_highd`, 60s, highD/NGSIM Trajectory):
+| Controller | DII | RMS Jerk | Flips/min | Min Gap | Max Gap | Peak s_f/X | CIVI_X | Cut-In Prob |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ACC** | 85.9 | 0.97 m/s³ | 2.5 | 16.32 m | 27.2 m | 0.49× | 0.000 | 0.0% |
+| **BCC** | 90.0 | 0.43 m/s³ | 2.1 | 18.23 m | 26.8 m | 0.48× | 0.000 | 0.0% |
+| **ACC+BCC** | 87.5 | 0.69 m/s³ | 2.6 | 17.15 m | 27.0 m | 0.49× | 0.000 | 0.0% |
+| **RL (TD3)** | 80.5 | 2.37 m/s³ | 106.8 | 15.65 m | 43.2 m | **0.77×** | **0.000** | **0.0%** |
+| **IDM (Gap-Ref)** | 81.4 | 0.38 m/s³ | 0.2 | 19.88 m | 83.5 m | 1.49× | 0.002 | 10.9% |
+
+#### 4. Regression & Robustness Verification
+- **29 Unit Tests Passing (100% OK)**: Verified across `tests/test_sensor_delay_and_highway_scenario.py`, `tests/test_reckless_driver_color.py`, `tests/test_gui_intuitiveness.py`, `tests/test_cut_in_metrics.py`, and `tests/test_driver_intuitiveness.py`.
+- **Delay Robustness**: Verified zero collision under $\tau_{\text{delay}} = 0.2\text{ s}$ across high-speed highway scenarios.
+
+---
+
+## 📌 Phase 24: Scenario-Based Domain Randomization (SBDR) & Dynamic Cut-In/Cut-Out Training Engine
+
+### 1. Motivation & Scientific Rationale
+While Phase 23 established an empirical highway benchmark and perception delay pipeline, the training environment (`env/accel_traffic_env.py`) historically synthesized disturbances solely through lead car longitudinal velocity profiles. Crucial multi-agent operational phenomena—such as dynamic adjacent vehicle cut-ins, open-lane cut-outs, aggressive rear tailgater squeeze, and heterogeneous human IDM driver interactions—were only experienced by the agent during zero-shot testing.
+
+To maximize active safety, string stability, and disturbance absorption without risk of memorizing fixed test instances, Phase 24 establishes **Scenario-Based Domain Randomization (SBDR)**:
+1. **Separation of Training vs. Testing**: The agent trains on randomized *distributions* of maneuver archetypes (stochastic insertion gaps, randomized merge speeds, jittered trigger timestamps), while testing is conducted on the 11 frozen, deterministic operational benchmark scenarios.
+2. **Dynamic Gap Discontinuity Engine**: Introduces physical cut-in (downward gap step-drop $s_f \to s_{\text{cut}} \in [4.0, 8.5\text{ m}]$) and cut-out (upward gap expansion $\Delta s \in [35, 55\text{ m}]$) mid-episode triggers.
+3. **Platoon Heterogeneity**: Seeds human IDM drivers ($a_{\text{max}}, b, T, s_0$ randomized) directly into follower slots, and activates reckless rear tailgaters.
+
+### 2. Architectural Modifications & Physics Formulation
+1. **11 Scenario Archetypes (`env/accel_traffic_env.py`)**:
+   - `steady_cruise`: Highway equilibrium lock & energy baseline.
+   - `urban_stop_and_go`: Multi-trip transient disturbance (`data.csv`, `data1.csv`, `data2.csv`).
+   - `full_stop_queue`: Full stop, 10–20s standstill hold, and launch.
+   - `lead_emergency_braking`: $-4.5\text{ to }-5.0\text{ m/s}^2$ hard deceleration to zero.
+   - `sinusoidal_wave`: Upstream harmonic wave ($A \in [2.5, 4.5\text{ m/s}]$, $T \in [12, 22\text{ s}]$).
+   - `lead_cut_in`: Dynamic step-drop in forward gap $s_{\text{cut}} \in [4.0, 8.5\text{ m}]$ at step $t_{\text{cut}} \in [15, 45\text{ s}]$, testing collision-avoidance braking without rear pileup.
+   - `lead_cut_out`: Forward position shift $\Delta s \in [35, 55\text{ m}]$ at step $t_{\text{out}} \in [15, 45\text{ s}]$, testing smooth gap closure without over-throttling.
+   - `aggressive_tailgater`: Car $N-1$ surges to $v_{\text{des}} + 6\text{ m/s}$ to apply forward squeeze pressure.
+   - `speed_drop_recovery`: Slowdown $22 \to 6\text{ m/s}$ with hold and recovery ramps.
+   - `mixed_idm_traffic`: 1–2 follower cars assigned human IDM driver physics (`is_human=True`, `is_rl=False`).
+   - `highway_empirical_highd`: highD / NGSIM real-world highway speed trace (`highway_traffic.csv`).
+2. **Perception Delay & Noise Domain Randomization**:
+   - `_randomize_params()` injects stochastic perception delays $\tau \in \{0.0, 0.1, 0.2\text{ s}\}$ and noise $\sigma \in \{0.0, 0.05, 0.10\text{ m}\}$ into training episodes, ensuring the policy naturally accommodates sensor jitter.
+3. **Dynamic Step Trigger Engine**:
+   - `_trigger_cut_in()` dynamically repositions Car 0 ahead of Car 1:
+     $$p_{\text{lead}} = (p_{\text{ego}} - s_{\text{cut}} - L_{\text{lead}}) \pmod{L_{\text{road}}}$$
+     $$v_{\text{lead}} = \text{clamp}(v_{\text{ego}} + \Delta v_{\text{cut}}, 2.0, v_{\text{max}} - 2.0)$$
+   - `_trigger_cut_out()` shifts Car 0 forward by $\Delta s_{\text{shift}}$ to instantly simulate an open-lane acceleration vacuum.
+   - `_update_tailgater()` overrides trailing vehicle acceleration toward $v_{\text{des}} + 6\text{ m/s}$ using classical tracking gains.
+
+### 3. Verification & Test Suite Expansion
+- **36 Unit Tests Passing (100% OK in 45.3s)**:
+  - Added `tests/test_scenario_domain_randomization.py` (7 tests): verifying all 11 archetypes, cut-in execution, cut-out execution, tailgater activation, mixed IDM seeding, perception delay integration, and clean VecEnv step execution.
+  - Zero regression across existing test suites (`test_cut_in_metrics.py`, `test_driver_intuitiveness.py`, `test_gui_intuitiveness.py`, `test_sensor_delay_and_highway_scenario.py`, `test_reckless_driver_color.py`).
+
+
+
+
 
