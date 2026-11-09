@@ -444,38 +444,34 @@ v_err = (car.velocity - target_v) / max(target_v, 1.0)
 
 ---
 
-## 4. Total Composite Reward Equation
+## 4. Total Composite Reward Equation: The 8 Modular Reward Groups
 
-The total un-normalized step reward for follower vehicle `i` is the direct algebraic sum of all active components:
+The 24 detailed micro-terms are grouped into **8 canonical, orthogonal control objectives**:
 
 ```text
-R_i = r_collision
-    + r_headway
-    + r_danger
-    + r_v_match
-    + r_closing_damp
-    + r_safety_brake
-    + r_string
-    + r_panic_brake
-    + r_speed
-    + r_speed_linear
-    + r_lag
-    + r_catchup
-    + r_stall
-    + r_standstill_gap
-    + r_premature_stop
-    + r_standstill_hold
-    + r_launch
-    + r_open_road_hesitation
-    + r_bcc
-    + r_accel
-    + r_jerk
-    + r_act_delta
-    + r_cruise_lock
-    + r_energy
+R_i = R_safety + R_headway + R_velocity + R_string + R_standstill + R_bilateral + R_comfort + R_energy
 ```
 
-In training, `R_i` passes through `VecNormalize(norm_reward=True, clip_reward=25.0)` to maintain unit variance stability in TD3 Critic updates.
+Where each macro-reward represents a distinct operational objective of the platoon controller:
+
+1. **`R_safety` (Collision Avoidance & Physical Protection)**:
+   $$R_{\text{safety}} = r_{\text{collision}} + r_{\text{danger}} + r_{\text{safety\_brake}}$$
+2. **`R_headway` (Safe Headway & Longitudinal Gap Regulation)**:
+   $$R_{\text{headway}} = r_{\text{headway}} + r_{\text{lag}} + r_{\text{catchup}} + r_{\text{open\_road\_hesitation}}$$
+3. **`R_velocity` (Velocity Tracking & Smooth Progression)**:
+   $$R_{\text{velocity}} = r_{\text{v\_match}} + r_{\text{closing\_damp}} + r_{\text{speed}} + r_{\text{speed\_linear}} + r_{\text{stall}}$$
+4. **`R_string` (String Stability & Downstream Shockwave Damping)**:
+   $$R_{\text{string}} = r_{\text{string}} + r_{\text{panic\_brake}}$$
+5. **`R_standstill` (Standstill Auto-Hold, Queue Packing & Drive-Off Launch)**:
+   $$R_{\text{standstill}} = r_{\text{standstill\_gap}} + r_{\text{premature\_stop}} + r_{\text{standstill\_hold}} + r_{\text{launch}}$$
+6. **`R_bilateral` (Bilateral Coupling & Rear Platoon Lattice Awareness)**:
+   $$R_{\text{bilateral}} = r_{\text{bcc\_tailgate}} + r_{\text{bcc\_damp}} + r_{\text{bcc\_consensus}} + r_{\text{bcc\_tension}}$$
+7. **`R_comfort` (Passenger Comfort, Jerk Minimization & Zero-Acc Attractor)**:
+   $$R_{\text{comfort}} = r_{\text{accel}} + r_{\text{jerk}} + r_{\text{act\_delta}} + r_{\text{cruise\_lock}}$$
+8. **`R_energy` (Energy Efficiency & Eco Dynamics)**:
+   $$R_{\text{energy}} = r_{\text{energy}} + r_{\text{eco\_accel}} + r_{\text{coast}}$$
+
+In training, `R_i` passes through `VecNormalize(norm_reward=True, clip_reward=35.0)` to maintain unit variance stability in TD3 Critic updates.
 
 ---
 

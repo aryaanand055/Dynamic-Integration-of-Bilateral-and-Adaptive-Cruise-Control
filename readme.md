@@ -47,7 +47,7 @@ Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/
 │
 ├── env/                    # Reinforcement Learning Gym environment
 │   ├── __init__.py
-│   └── accel_traffic_env.py # Decentralized multi-agent VecEnv with 24 reward function terms & SBDR engine
+│   └── accel_traffic_env.py # Decentralized multi-agent VecEnv with 8 modular reward groups (24 sub-terms) & SBDR engine
 │
 ├── gui/                    # Graphical user interfaces & live visualization
 │   ├── __init__.py
@@ -286,7 +286,10 @@ $$R_i = \sum_{k=1}^{24} r_k$$
 
 ---
 
-### 5.4 Master Summary Table: All 24 Reward Components
+### 5.4 Master Summary Table: The 8 Modular Reward Groups (Synthesizing All 24 Sub-Components)
+
+The reward function structures all individual control criteria into **8 canonical operational objectives**:
+$$R = R_{\text{safety}} + R_{\text{headway}} + R_{\text{velocity}} + R_{\text{string}} + R_{\text{standstill}} + R_{\text{bilateral}} + R_{\text{comfort}} + R_{\text{energy}}$$
 
 | Category | Component | Primary Input Variables | Exact Weight Scale | Output Range | Typical Cruising | Typical Braking | Typical Standstill | Typical Launch |
 | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |

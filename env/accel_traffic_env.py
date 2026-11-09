@@ -998,11 +998,43 @@ class AccelTrafficEnv(VecEnv):
                     # Penalize accelerating toward a slower vehicle ahead
                     r_coast = -1.5 * min(car.acceleration / 0.8, 2.0)
                 
+            # =========================================================================
+            # THE 8 MODULAR REWARD GROUPS
+            # =========================================================================
+            # 1. Safety & Collision Avoidance
+            R_safety = r_collision + r_danger + r_safety_brake
+
+            # 2. Headway Tracking & Gap Regulation
+            R_headway = r_headway + r_lag + r_catchup + r_open_road_hesitation
+
+            # 3. Velocity Tracking & Smooth Progression
+            R_velocity = r_v_match + r_closing_damp + r_speed + r_speed_linear + r_stall
+
+            # 4. String Stability & Wave Damping
+            R_string = r_string + r_panic_brake
+
+            # 5. Standstill Auto-Hold, Queue Packing & Launch
+            R_standstill = r_standstill_gap + r_premature_stop + r_standstill_hold + r_launch
+
+            # 6. Bilateral Multi-Agent Coupling (BCC)
+            R_bilateral = r_bcc
+
+            # 7. Passenger Comfort & Action Smoothness
+            R_comfort = r_accel + r_jerk + r_act_delta + r_cruise_lock
+
+            # 8. Energy Efficiency & Eco Dynamics
+            R_energy = r_energy + r_eco_accel + r_coast
+
+            # Total Composite Reward: Direct algebraic sum of the 8 canonical objectives
             rewards[obs_idx] = (
-                r_collision + r_headway + r_danger + r_v_match + 
-                r_closing_damp + r_safety_brake + r_string + r_panic_brake + r_speed + r_speed_linear + r_lag + r_catchup + r_stall + 
-                r_standstill_gap + r_premature_stop + r_standstill_hold + r_launch + r_open_road_hesitation +
-                r_bcc + r_accel + r_jerk + r_act_delta + r_cruise_lock + r_energy + r_eco_accel + r_coast
+                R_safety +
+                R_headway +
+                R_velocity +
+                R_string +
+                R_standstill +
+                R_bilateral +
+                R_comfort +
+                R_energy
             )
 
             if return_breakdown:
@@ -1029,6 +1061,16 @@ class AccelTrafficEnv(VecEnv):
                         'is_emergency': bool(is_emergency)
                     },
                     'rewards': {
+                        # 8 Core Group Rewards
+                        'R_safety': float(R_safety),
+                        'R_headway': float(R_headway),
+                        'R_velocity': float(R_velocity),
+                        'R_string': float(R_string),
+                        'R_standstill': float(R_standstill),
+                        'R_bilateral': float(R_bilateral),
+                        'R_comfort': float(R_comfort),
+                        'R_energy': float(R_energy),
+                        # Sub-component terms for granular inspection
                         'r_collision': float(r_collision),
                         'r_danger': float(r_danger),
                         'r_safety_brake': float(r_safety_brake),
