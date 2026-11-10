@@ -3,3 +3,7 @@ tensorboard_logs
 .venv
 recordings
 models/
+plots/
+logs/*.csv
+logs/*.txt
+
