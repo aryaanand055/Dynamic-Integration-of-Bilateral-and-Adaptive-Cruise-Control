@@ -316,8 +316,12 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         jerks_rl, jerks_acc, jerks_bcc, jerks_accbcc = [], [], [], []
         gaps_acc, gaps_bcc, gaps_accbcc = [], [], []
         collisions_acc = 0
+        rear_hits_rl = 0
+        rear_hits_acc = 0
         collisions_bcc = 0
+        rear_hits_bcc = 0
         collisions_accbcc = 0
+        rear_hits_accbcc = 0
         
         traces_rl = [{'gaps': [], 'speeds': [], 'vfs': [], 'vbs': []} for _ in eval_indices]
         traces_acc = [{'gaps': [], 'speeds': [], 'vfs': [], 'vbs': []} for _ in eval_indices]
@@ -370,13 +374,14 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
                 if step > 0:
                     jerks_list.extend(np.abs(cur_acc - prev_acc) / params['dt'])
                 min_g = min(step_gaps) if step_gaps else road_len
-                collided = (min_g < 0.5) or getattr(city, 'collided_this_step', False)
-                return cur_acc, min_g, collided
+                col_front = (min_g < 0.5) or any(getattr(city.cars[i], 'just_collided_front', False) for i in eval_indices)
+                col_rear = any(getattr(city.cars[i], 'just_collided_rear', False) for i in eval_indices)
+                return cur_acc, min_g, col_front, col_rear
             
-            cur_acc_rl, min_g_rl, col_rl = step_metrics(city_rl, prev_acc_rl, follower_max_decel_rl, jerks_rl, gaps_rl, traces_rl)
-            cur_acc_acc, min_g_acc, col_acc = step_metrics(city_acc, prev_acc_acc, follower_max_decel_acc, jerks_acc, gaps_acc, traces_acc)
-            cur_acc_bcc, min_g_bcc, col_bcc = step_metrics(city_bcc, prev_acc_bcc, follower_max_decel_bcc, jerks_bcc, gaps_bcc, traces_bcc)
-            cur_acc_accbcc, min_g_accbcc, col_accbcc = step_metrics(city_accbcc, prev_acc_accbcc, follower_max_decel_accbcc, jerks_accbcc, gaps_accbcc, traces_accbcc)
+            cur_acc_rl, min_g_rl, col_rl, rear_rl = step_metrics(city_rl, prev_acc_rl, follower_max_decel_rl, jerks_rl, gaps_rl, traces_rl)
+            cur_acc_acc, min_g_acc, col_acc, rear_acc = step_metrics(city_acc, prev_acc_acc, follower_max_decel_acc, jerks_acc, gaps_acc, traces_acc)
+            cur_acc_bcc, min_g_bcc, col_bcc, rear_bcc = step_metrics(city_bcc, prev_acc_bcc, follower_max_decel_bcc, jerks_bcc, gaps_bcc, traces_bcc)
+            cur_acc_accbcc, min_g_accbcc, col_accbcc, rear_accbcc = step_metrics(city_accbcc, prev_acc_accbcc, follower_max_decel_accbcc, jerks_accbcc, gaps_accbcc, traces_accbcc)
             
             prev_acc_rl = cur_acc_rl
             prev_acc_acc = cur_acc_acc
@@ -385,9 +390,13 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
             
             min_gaps_seen.append(min_g_rl)
             if col_rl: collisions += 1
+            if rear_rl: rear_hits_rl += 1
             if col_acc: collisions_acc += 1
+            if rear_acc: rear_hits_acc += 1
             if col_bcc: collisions_bcc += 1
+            if rear_bcc: rear_hits_bcc += 1
             if col_accbcc: collisions_accbcc += 1
+            if rear_accbcc: rear_hits_accbcc += 1
             
             for i in eval_indices:
                 rl_speeds.append(city_rl.cars[i].velocity)
@@ -397,12 +406,24 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         e_accbcc = sum(c.energy_used for c in city_accbcc.cars)
         e_rl = sum(c.energy_used for c in city_rl.cars)
         
-        # String stability damping ratios
-        l_decel = max(leader_max_decel, 0.1)
-        damping_rl = float(np.max(follower_max_decel_rl) / l_decel) if len(follower_max_decel_rl) > 0 else 0.0
-        damping_acc = float(np.max(follower_max_decel_acc) / l_decel) if len(follower_max_decel_acc) > 0 else 0.0
-        damping_bcc = float(np.max(follower_max_decel_bcc) / l_decel) if len(follower_max_decel_bcc) > 0 else 0.0
-        damping_accbcc = float(np.max(follower_max_decel_accbcc) / l_decel) if len(follower_max_decel_accbcc) > 0 else 0.0
+        # String stability damping ratios (relative to origin of disturbance)
+        if sc['id'] == 'three_car_trailing_halt':
+            # Trailing car brakes from 15 m/s to 0 m/s in 4.0s (disturbance amplitude = 3.75 m/s²)
+            disturbance_mag = 3.75
+        elif sc['id'] == 'aggressive_rear_tailgater':
+            # Trailing car accelerates from 15 m/s to 22 m/s in 4.0s (disturbance amplitude = 1.75 m/s²)
+            disturbance_mag = 1.75
+        elif sc['id'] == 'internal_car3_emergency_brake':
+            # Internal Car 2 brakes hard at -4.5 m/s² (disturbance amplitude = 4.5 m/s²)
+            disturbance_mag = 4.5
+        else:
+            # Lead vehicle disturbance (Scenarios 1-5, 7, 10, 11)
+            disturbance_mag = max(leader_max_decel, 0.1)
+
+        damping_rl = float(np.max(follower_max_decel_rl) / disturbance_mag) if len(follower_max_decel_rl) > 0 else 0.0
+        damping_acc = float(np.max(follower_max_decel_acc) / disturbance_mag) if len(follower_max_decel_acc) > 0 else 0.0
+        damping_bcc = float(np.max(follower_max_decel_bcc) / disturbance_mag) if len(follower_max_decel_bcc) > 0 else 0.0
+        damping_accbcc = float(np.max(follower_max_decel_accbcc) / disturbance_mag) if len(follower_max_decel_accbcc) > 0 else 0.0
 
         # Cut-In and X-factor evaluation across controllers
         def get_ctrl_cut_in(traces_list):
@@ -435,6 +456,13 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         sc_res = {
             "name": sc['name'],
             "collisions_rl": collisions,
+            "rear_hits_rl": rear_hits_rl,
+            "collisions_acc": collisions_acc,
+            "rear_hits_acc": rear_hits_acc,
+            "collisions_bcc": collisions_bcc,
+            "rear_hits_bcc": rear_hits_bcc,
+            "collisions_accbcc": collisions_accbcc,
+            "rear_hits_accbcc": rear_hits_accbcc,
             "min_gap_rl": float(min(min_gaps_seen)) if min_gaps_seen else 0.0,
             "mean_gap_rl": float(np.mean(gaps_rl)) if gaps_rl else 0.0,
             "mean_speed_rl": float(np.mean(rl_speeds)) if rl_speeds else 0.0,
@@ -461,8 +489,12 @@ def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None
         }
         results[sc['id']] = sc_res
         
+        col_rl_str = f"{collisions}" + (f" ({rear_hits_rl} rear)" if rear_hits_rl else "")
+        col_acc_str = f"{collisions_acc}" + (f" ({rear_hits_acc} rear)" if rear_hits_acc else "")
+        col_bcc_str = f"{collisions_bcc}" + (f" ({rear_hits_bcc} rear)" if rear_hits_bcc else "")
+        col_accbcc_str = f"{collisions_accbcc}" + (f" ({rear_hits_accbcc} rear)" if rear_hits_accbcc else "")
         print(f"\n--- {sc['name']} ---")
-        print(f"  Collisions: RL={collisions} | ACC={collisions_acc} | BCC={collisions_bcc} | ACC+BCC={collisions_accbcc}")
+        print(f"  Collisions (Active): RL={col_rl_str} | ACC={col_acc_str} | BCC={col_bcc_str} | ACC+BCC={col_accbcc_str}")
         print(f"  Min Gap:    RL={sc_res['min_gap_rl']:.2f}m | Mean Gap: RL={sc_res['mean_gap_rl']:.2f}m")
         print(f"  Mean Jerk:  RL={sc_res['mean_jerk_rl']:.2f} m/s^3 | ACC={sc_res['mean_jerk_acc']:.2f} | BCC={sc_res['mean_jerk_bcc']:.2f} | ACC+BCC={sc_res['mean_jerk_accbcc']:.2f}")
         print(f"  Energy:     RL={e_rl:.3f} kWh | ACC={e_acc:.3f} | BCC={e_bcc:.3f} | ACC+BCC={e_accbcc:.3f}")

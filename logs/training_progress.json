@@ -1,18 +1,226 @@
 [
   {
-    "step": 70000,
-    "total_timesteps": 150000,
-    "progress_pct": 46.7,
-    "elapsed_sec": 331.4,
+    "step": 7000,
+    "total_timesteps": 200000,
+    "progress_pct": 3.5,
+    "elapsed_sec": 37.1,
+    "fps": 13,
+    "ep_rew_mean": null
+  },
+  {
+    "step": 14000,
+    "total_timesteps": 200000,
+    "progress_pct": 7.0,
+    "elapsed_sec": 64.7,
     "fps": 15,
-    "ep_rew_mean": -15.43
+    "ep_rew_mean": null
+  },
+  {
+    "step": 21000,
+    "total_timesteps": 200000,
+    "progress_pct": 10.5,
+    "elapsed_sec": 99.4,
+    "fps": 15,
+    "ep_rew_mean": -10.37
+  },
+  {
+    "step": 28000,
+    "total_timesteps": 200000,
+    "progress_pct": 14.0,
+    "elapsed_sec": 124.3,
+    "fps": 16,
+    "ep_rew_mean": -10.37
+  },
+  {
+    "step": 35000,
+    "total_timesteps": 200000,
+    "progress_pct": 17.5,
+    "elapsed_sec": 150.9,
+    "fps": 16,
+    "ep_rew_mean": -8.69
+  },
+  {
+    "step": 42000,
+    "total_timesteps": 200000,
+    "progress_pct": 21.0,
+    "elapsed_sec": 178.7,
+    "fps": 16,
+    "ep_rew_mean": -8.69
+  },
+  {
+    "step": 49000,
+    "total_timesteps": 200000,
+    "progress_pct": 24.5,
+    "elapsed_sec": 204.1,
+    "fps": 17,
+    "ep_rew_mean": -7.16
+  },
+  {
+    "step": 56000,
+    "total_timesteps": 200000,
+    "progress_pct": 28.0,
+    "elapsed_sec": 228.8,
+    "fps": 17,
+    "ep_rew_mean": -7.16
+  },
+  {
+    "step": 63000,
+    "total_timesteps": 200000,
+    "progress_pct": 31.5,
+    "elapsed_sec": 253.7,
+    "fps": 17,
+    "ep_rew_mean": -7.4
+  },
+  {
+    "step": 70000,
+    "total_timesteps": 200000,
+    "progress_pct": 35.0,
+    "elapsed_sec": 279.9,
+    "fps": 17,
+    "ep_rew_mean": -7.4
+  },
+  {
+    "step": 77000,
+    "total_timesteps": 200000,
+    "progress_pct": 38.5,
+    "elapsed_sec": 323.0,
+    "fps": 17,
+    "ep_rew_mean": -6.03
+  },
+  {
+    "step": 84000,
+    "total_timesteps": 200000,
+    "progress_pct": 42.0,
+    "elapsed_sec": 356.9,
+    "fps": 16,
+    "ep_rew_mean": -6.03
+  },
+  {
+    "step": 91000,
+    "total_timesteps": 200000,
+    "progress_pct": 45.5,
+    "elapsed_sec": 388.1,
+    "fps": 16,
+    "ep_rew_mean": -5.83
+  },
+  {
+    "step": 98000,
+    "total_timesteps": 200000,
+    "progress_pct": 49.0,
+    "elapsed_sec": 415.3,
+    "fps": 16,
+    "ep_rew_mean": -5.83
+  },
+  {
+    "step": 105000,
+    "total_timesteps": 200000,
+    "progress_pct": 52.5,
+    "elapsed_sec": 440.7,
+    "fps": 17,
+    "ep_rew_mean": -4.97
+  },
+  {
+    "step": 112000,
+    "total_timesteps": 200000,
+    "progress_pct": 56.0,
+    "elapsed_sec": 466.5,
+    "fps": 17,
+    "ep_rew_mean": -4.97
+  },
+  {
+    "step": 119000,
+    "total_timesteps": 200000,
+    "progress_pct": 59.5,
+    "elapsed_sec": 495.0,
+    "fps": 17,
+    "ep_rew_mean": -6.17
+  },
+  {
+    "step": 126000,
+    "total_timesteps": 200000,
+    "progress_pct": 63.0,
+    "elapsed_sec": 522.2,
+    "fps": 17,
+    "ep_rew_mean": -6.17
+  },
+  {
+    "step": 133000,
+    "total_timesteps": 200000,
+    "progress_pct": 66.5,
+    "elapsed_sec": 551.4,
+    "fps": 17,
+    "ep_rew_mean": -6.38
   },
   {
     "step": 140000,
-    "total_timesteps": 150000,
-    "progress_pct": 93.3,
-    "elapsed_sec": 673.2,
-    "fps": 14,
-    "ep_rew_mean": -10.16
+    "total_timesteps": 200000,
+    "progress_pct": 70.0,
+    "elapsed_sec": 580.0,
+    "fps": 17,
+    "ep_rew_mean": -6.38
+  },
+  {
+    "step": 147000,
+    "total_timesteps": 200000,
+    "progress_pct": 73.5,
+    "elapsed_sec": 609.3,
+    "fps": 17,
+    "ep_rew_mean": -5.35
+  },
+  {
+    "step": 154000,
+    "total_timesteps": 200000,
+    "progress_pct": 77.0,
+    "elapsed_sec": 652.5,
+    "fps": 16,
+    "ep_rew_mean": -5.35
+  },
+  {
+    "step": 161000,
+    "total_timesteps": 200000,
+    "progress_pct": 80.5,
+    "elapsed_sec": 702.6,
+    "fps": 16,
+    "ep_rew_mean": -4.43
+  },
+  {
+    "step": 168000,
+    "total_timesteps": 200000,
+    "progress_pct": 84.0,
+    "elapsed_sec": 735.9,
+    "fps": 16,
+    "ep_rew_mean": -4.43
+  },
+  {
+    "step": 175000,
+    "total_timesteps": 200000,
+    "progress_pct": 87.5,
+    "elapsed_sec": 765.7,
+    "fps": 16,
+    "ep_rew_mean": -6.45
+  },
+  {
+    "step": 182000,
+    "total_timesteps": 200000,
+    "progress_pct": 91.0,
+    "elapsed_sec": 793.4,
+    "fps": 16,
+    "ep_rew_mean": -6.45
+  },
+  {
+    "step": 189000,
+    "total_timesteps": 200000,
+    "progress_pct": 94.5,
+    "elapsed_sec": 817.8,
+    "fps": 16,
+    "ep_rew_mean": -8.38
+  },
+  {
+    "step": 196000,
+    "total_timesteps": 200000,
+    "progress_pct": 98.0,
+    "elapsed_sec": 843.1,
+    "fps": 16,
+    "ep_rew_mean": -8.38
   }
 ]

@@ -85,114 +85,93 @@ class RLControlWindow(ControlWindow):
     def _configure_style(self):
         super()._configure_style()
         style = ttk.Style(self.master)
-        style.configure(
-            "TCombobox",
-            fieldbackground="#0b1220",
-            background="#1e293b",
-            foreground="#e2e8f0",
-            darkcolor="#1e293b",
-            lightcolor="#1e293b",
-            arrowcolor="#cbd5e1",
-            padding=4,
-        )
-        self.master.option_add("*TCombobox*Listbox.background", "#0b1220")
-        self.master.option_add("*TCombobox*Listbox.foreground", "#e2e8f0")
-        self.master.option_add("*TCombobox*Listbox.selectBackground", "#334155")
-        self.master.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
 
-        # Sleek modern notebook tab styles
-        style.configure("TNotebook", background="#0f172a", borderwidth=0)
+        # Sleek modern notebook tab styles for light theme
+        style.configure("TNotebook", background="#f1f5f9", borderwidth=0)
         style.configure(
             "TNotebook.Tab",
-            background="#1e293b",
-            foreground="#94a3b8",
-            padding=[16, 6],
-            font=("Segoe UI", 9, "bold")
+            background="#e2e8f0",
+            foreground="#475569",
+            padding=[16, 8],
+            font=("Segoe UI", 9, "bold"),
+            borderwidth=0,
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", "#334155"), ("active", "#253347")],
-            foreground=[("selected", "#38bdf8"), ("active", "#ffffff")]
+            background=[("selected", "#ffffff"), ("active", "#f1f5f9")],
+            foreground=[("selected", "#0284c7"), ("active", "#0f172a")]
         )
 
         # Treeview styles for intuitiveness table
         style.configure(
             "Intuitiveness.Treeview",
-            background="#0b1220",
-            foreground="#e2e8f0",
-            fieldbackground="#0b1220",
-            rowheight=26,
-            font=("Segoe UI", 9)
+            background="#ffffff",
+            foreground="#0f172a",
+            fieldbackground="#ffffff",
+            rowheight=28,
+            font=("Segoe UI", 9),
+            borderwidth=0,
         )
         style.configure(
             "Intuitiveness.Treeview.Heading",
-            background="#1e293b",
-            foreground="#38bdf8",
-            font=("Segoe UI", 9, "bold")
+            background="#f1f5f9",
+            foreground="#0f172a",
+            font=("Segoe UI", 9, "bold"),
+            borderwidth=0,
         )
         style.map(
             "Intuitiveness.Treeview",
-            background=[("selected", "#334155")],
-            foreground=[("selected", "#ffffff")]
+            background=[("selected", "#e0f2fe")],
+            foreground=[("selected", "#0369a1")]
         )
 
     def _build_layout(self):
         super()._build_layout()
-        # Bottom GUI status bar
-        self.status_bar_frame = tk.Frame(self.root, bg="#111827", padx=10, pady=4)
-        self.status_bar_frame.pack(fill="x", side="bottom", pady=(6, 0))
-        self.status_bar = tk.Label(
-            self.status_bar_frame,
-            text="System Ready",
-            fg="#94a3b8",
-            bg="#111827",
-            font=("Segoe UI", 9),
-            anchor="w"
-        )
-        self.status_bar.pack(side="left", fill="x", expand=True)
+        # System Ready status bar removed per user request
+        self.status_bar_frame = None
+        self.status_bar = None
 
     def _build_controls(self):
         super()._build_controls()
 
-        # Benchmark Scenario Selection Card
-        scenario_card = tk.Frame(self.controls_container, bg="#111827", padx=10, pady=10)
-        scenario_card.pack(fill="x", pady=(0, 10))
+        # Benchmark Scenario Selection Section (inside single unified side panel)
+        scenario_section = tk.Frame(self.controls_container, bg="#ffffff")
+        scenario_section.pack(fill="x", pady=(0, 16))
 
-        ttk.Label(scenario_card, text="Scenario Selection", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(scenario_card, text="Select operational benchmark regime (1–10)", style="Meta.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(scenario_section, text="Scenario Selection", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         self.benchmark_scenarios = get_scenarios()
         self.scenario_options = ["0. Default Free Simulation"] + [sc['name'] for sc in self.benchmark_scenarios]
         self.selected_scenario_var = tk.StringVar(value=self.scenario_options[0])
 
         self.scenario_combobox = ttk.Combobox(
-            scenario_card,
+            scenario_section,
             textvariable=self.selected_scenario_var,
             values=self.scenario_options,
             state="readonly",
+            style="TCombobox",
         )
         self.scenario_combobox.pack(fill="x", pady=(0, 6))
         self.scenario_combobox.bind("<<ComboboxSelected>>", self._on_scenario_selected)
 
         self.scenario_info_label = ttk.Label(
-            scenario_card,
+            scenario_section,
             text="Mode: Free simulation using parameter values",
             style="Meta.TLabel",
         )
         self.scenario_info_label.pack(anchor="w")
 
-        # RL Model Selection Card
-        model_card = tk.Frame(self.controls_container, bg="#111827", padx=10, pady=10)
-        model_card.pack(fill="x", pady=(0, 10))
+        # RL Model Selection Section (inside single unified side panel)
+        model_section = tk.Frame(self.controls_container, bg="#ffffff")
+        model_section.pack(fill="x", pady=(0, 16))
 
-        ttk.Label(model_card, text="RL Model Selection", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(model_card, text="Select active policy checkpoint", style="Meta.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(model_section, text="RL Model Selection", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         self.available_models = self._scan_available_models()
         default_choice = list(self.available_models.keys())[0] if self.available_models else ""
         self.selected_model_var = tk.StringVar(value=default_choice)
 
-        selector_row = ttk.Frame(model_card, style="Card.TFrame")
+        selector_row = tk.Frame(model_section, bg="#ffffff")
         selector_row.pack(fill="x", pady=(0, 6))
         selector_row.columnconfigure(0, weight=1)
 
@@ -201,19 +180,21 @@ class RLControlWindow(ControlWindow):
             textvariable=self.selected_model_var,
             values=list(self.available_models.keys()),
             state="readonly",
+            style="TCombobox",
         )
-        self.model_combobox.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.model_combobox.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=2)
         self.model_combobox.bind("<<ComboboxSelected>>", self._on_model_dropdown_changed)
 
         self.browse_model_button = ttk.Button(
             selector_row,
             text="Browse...",
             command=self._browse_model_file,
+            style="TButton",
         )
-        self.browse_model_button.grid(row=0, column=1, sticky="e")
+        self.browse_model_button.grid(row=0, column=1, sticky="e", pady=2)
 
         self.model_status_label = ttk.Label(
-            model_card,
+            model_section,
             text="Initializing model...",
             style="Meta.TLabel",
         )
@@ -223,14 +204,14 @@ class RLControlWindow(ControlWindow):
         if default_choice and default_choice in self.available_models:
             self.load_rl_model(self.available_models[default_choice])
 
-        # Promote Scenario Selection, Model Selection, and Simulation Actions to the top of the controls column
+        # Promote Scenario Selection, Model Selection, and Simulation Actions to top of side panel
         first_widget = self.control_cards[0] if hasattr(self, 'control_cards') and self.control_cards else None
         action_card = getattr(self, 'action_card', None) or (self.run_button.master if hasattr(self, 'run_button') else None)
         if first_widget:
-            scenario_card.pack(fill="x", pady=(0, 10), before=first_widget)
-            model_card.pack(fill="x", pady=(0, 10), before=first_widget)
+            scenario_section.pack(fill="x", pady=(0, 16), before=first_widget)
+            model_section.pack(fill="x", pady=(0, 16), before=first_widget)
             if action_card:
-                action_card.pack(fill="x", pady=(0, 12), before=first_widget)
+                action_card.pack(fill="x", pady=(0, 16), before=first_widget)
 
     def _apply_car_identities(self, city, sc=None):
         """
@@ -332,7 +313,7 @@ class RLControlWindow(ControlWindow):
 
             self.scenario_info_label.config(
                 text=f"Cars: {car_num} | Dur: {dur:.0f}s | Target: {v_des:.1f} m/s{human_info}",
-                foreground="#f87171" if human_info else "#38bdf8"
+                foreground="#dc2626" if human_info else "#0284c7"
             )
             # Pre-fill v_des and car_number entries
             if 'v_des' in self.entries:
@@ -461,14 +442,10 @@ class RLControlWindow(ControlWindow):
     def _build_visualization_area(self):
         self.right_content.columnconfigure(0, weight=1)
 
-        # Metrics strip
-        self.metrics_strip = tk.Frame(self.right_content, bg="#111827", padx=12, pady=8)
-        self.metrics_strip.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self.metrics_strip.columnconfigure((0, 1, 2), weight=1)
-
-        self.metric_value_total = self._inline_metric(self.metrics_strip, 0, "Energy", "0.0000 kWh")
-        self.metric_value_vel = self._inline_metric(self.metrics_strip, 1, "Avg Velocity", "0.00 m/s")
-        self.metric_value_stability = self._inline_metric(self.metrics_strip, 2, "Stability", "0.0")
+        # Top metrics strip removed per user request. Null references maintained for compatibility.
+        self.metric_value_total = None
+        self.metric_value_vel = None
+        self.metric_value_stability = None
 
         # Create City objects
         self.city_acc = RLCity()
@@ -481,7 +458,7 @@ class RLControlWindow(ControlWindow):
         # Tab 2 = Live Real-Time Telemetry & Gap Profiles
         # Tab 3 = Driver Intuitiveness & Benchmark Evaluation
         self.notebook = ttk.Notebook(self.right_content)
-        self.notebook.grid(row=1, column=0, sticky="nsew", pady=(2, 0))
+        self.notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 0))
         self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
 
         # Tab 1: Road Simulation View
@@ -489,15 +466,15 @@ class RLControlWindow(ControlWindow):
         self.notebook.add(self.tab_simulation, text="  Road Simulation  ")
 
         # Fleet Vehicle Color Legend Bar
-        legend_frame = tk.Frame(self.tab_simulation, bg="#111827", padx=12, pady=6)
-        legend_frame.pack(fill="x", pady=(0, 6))
+        legend_frame = tk.Frame(self.tab_simulation, bg="#ffffff", padx=12, pady=8)
+        legend_frame.pack(fill="x", pady=(0, 8))
 
-        tk.Label(legend_frame, text="Fleet Legend:", fg="#94a3b8", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 10))
-        tk.Label(legend_frame, text="■ Lead (Normal)", fg="#38bdf8", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
-        tk.Label(legend_frame, text="■ RL Ego Agent", fg="#22c55e", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
-        tk.Label(legend_frame, text="■ Normal Follower", fg="#94a3b8", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
-        tk.Label(legend_frame, text="■ Human Car (Whole Sim)", fg="#ef4444", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
-        tk.Label(legend_frame, text="■ Collision", fg="#f97316", bg="#111827", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="Fleet Legend:", fg="#0f172a", bg="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 10))
+        tk.Label(legend_frame, text="■ Lead (Normal)", fg="#0284c7", bg="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ RL Ego Agent", fg="#16a34a", bg="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ Normal Follower", fg="#64748b", bg="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ Human Car (Whole Sim)", fg="#dc2626", bg="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
+        tk.Label(legend_frame, text="■ Collision", fg="#ea580c", bg="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=6)
 
         self.visualizations_wrap = ttk.Frame(self.tab_simulation, style="Pane.TFrame")
         self.visualizations_wrap.pack(fill="both", expand=True)
@@ -538,8 +515,8 @@ class RLControlWindow(ControlWindow):
             ctrl_key = "RL"
 
         # Live intuitiveness tiles container strip on Road Simulation card
-        tiles_strip = tk.Frame(card, bg="#0b1220", padx=8, pady=5)
-        tiles_strip.pack(fill="x", pady=(5, 0))
+        tiles_strip = tk.Frame(card, bg="#f8fafc", padx=8, pady=6)
+        tiles_strip.pack(fill="x", pady=(8, 0))
         tiles_strip.columnconfigure((0, 1, 2, 3, 4), weight=1)
 
         tile_defs = [
@@ -562,22 +539,22 @@ class RLControlWindow(ControlWindow):
         }
 
         for key, label_text, col_idx in tile_defs:
-            tile_box = tk.Frame(tiles_strip, bg="#0b1220", padx=4, pady=2)
+            tile_box = tk.Frame(tiles_strip, bg="#f8fafc", padx=4, pady=2)
             tile_box.grid(row=0, column=col_idx, sticky="ew", padx=3)
 
             tk.Label(
                 tile_box,
                 text=label_text,
                 fg="#64748b",
-                bg="#0b1220",
+                bg="#f8fafc",
                 font=("Segoe UI", 7, "bold")
             ).pack(anchor="w")
 
             val_lbl = tk.Label(
                 tile_box,
                 text="--",
-                fg="#38bdf8",
-                bg="#0b1220",
+                fg="#0284c7",
+                bg="#f8fafc",
                 font=("Consolas", 9, "bold")
             )
             val_lbl.pack(anchor="w")
@@ -586,38 +563,39 @@ class RLControlWindow(ControlWindow):
         return painter, energy_label, meta_label
 
     def _build_realtime_telemetry_tab(self):
-        telemetry_header = tk.Frame(self.tab_telemetry, bg="#111827", padx=12, pady=8)
-        telemetry_header.pack(fill="x", pady=(0, 4))
+        telemetry_header = tk.Frame(self.tab_telemetry, bg="#ffffff", padx=12, pady=10)
+        telemetry_header.pack(fill="x", pady=(0, 6))
         
-        title_box = tk.Frame(telemetry_header, bg="#111827")
+        title_box = tk.Frame(telemetry_header, bg="#ffffff")
         title_box.pack(side="left")
         
         tk.Label(
             title_box, 
             text="Live Real-Time Telemetry Stream", 
-            fg="#f8fafc", 
-            bg="#111827", 
+            fg="#0f172a", 
+            bg="#ffffff", 
             font=("Segoe UI", 11, "bold")
         ).pack(anchor="w")
         
         tk.Label(
             title_box, 
             text="Real-time rendering of Velocity, Acceleration & Inter-Vehicle Gaps across all 4 controllers", 
-            fg="#94a3b8", 
-            bg="#111827", 
+            fg="#64748b", 
+            bg="#ffffff", 
             font=("Segoe UI", 8)
         ).pack(anchor="w")
 
-        btn_box = tk.Frame(telemetry_header, bg="#111827")
+        btn_box = tk.Frame(telemetry_header, bg="#ffffff")
         btn_box.pack(side="right")
         
         self.live_badge = tk.Label(
             btn_box,
             text="LIVE STREAMING",
-            fg="#22c55e",
-            bg="#111827",
+            fg="#16a34a",
+            bg="#f0fdf4",
             font=("Consolas", 9, "bold"),
-            padx=8
+            padx=8,
+            pady=3
         )
         self.live_badge.pack(side="left", padx=(0, 10))
 
@@ -628,7 +606,7 @@ class RLControlWindow(ControlWindow):
         ).pack(side="left")
 
         # Telemetry Matplotlib Figure (4 rows x 3 columns)
-        self.telemetry_fig = Figure(figsize=(13.5, 9.8), dpi=95, facecolor="#0f172a")
+        self.telemetry_fig = Figure(figsize=(13.5, 9.8), dpi=95, facecolor="#ffffff")
         self.telemetry_fig.subplots_adjust(
             left=0.06, right=0.98, top=0.95, bottom=0.06, hspace=0.38, wspace=0.22
         )
@@ -658,49 +636,49 @@ class RLControlWindow(ControlWindow):
 
             for ax in (ax_v, ax_a, ax_g):
                 ax.clear()
-                ax.set_facecolor("#0b1220")
-                ax.grid(True, color="#1e293b", linestyle="--", linewidth=0.6, alpha=0.8)
-                ax.tick_params(colors="#94a3b8", labelsize=7.5)
+                ax.set_facecolor("#f8fafc")
+                ax.grid(True, color="#e2e8f0", linestyle="--", linewidth=0.6, alpha=0.8)
+                ax.tick_params(colors="#64748b", labelsize=7.5)
                 for spine in ax.spines.values():
-                    spine.set_color("#1e293b")
+                    spine.set_color("#e2e8f0")
 
-            ax_v.set_title(f"{name} Velocity", color="#e2e8f0", fontsize=8.5, fontweight="bold", pad=3)
-            ax_v.set_ylabel("Vel (m/s)", color="#94a3b8", fontsize=8)
+            ax_v.set_title(f"{name} Velocity", color="#0f172a", fontsize=8.5, fontweight="bold", pad=3)
+            ax_v.set_ylabel("Vel (m/s)", color="#475569", fontsize=8)
             ax_v.set_ylim(-1.0, 32.0)
 
-            ax_a.set_title(f"{name} Acceleration", color="#e2e8f0", fontsize=8.5, fontweight="bold", pad=3)
-            ax_a.set_ylabel("Accel (m/s²)", color="#94a3b8", fontsize=8)
+            ax_a.set_title(f"{name} Acceleration", color="#0f172a", fontsize=8.5, fontweight="bold", pad=3)
+            ax_a.set_ylabel("Accel (m/s²)", color="#475569", fontsize=8)
             ax_a.set_ylim(-5.5, 3.5)
 
-            ax_g.set_title(f"{name} Inter-Vehicle Gap", color="#e2e8f0", fontsize=8.5, fontweight="bold", pad=3)
-            ax_g.set_ylabel("Gap (m)", color="#94a3b8", fontsize=8)
+            ax_g.set_title(f"{name} Inter-Vehicle Gap", color="#0f172a", fontsize=8.5, fontweight="bold", pad=3)
+            ax_g.set_ylabel("Gap (m)", color="#475569", fontsize=8)
             ax_g.set_ylim(0.0, 45.0)
 
             # Dashed safety min_dis line
-            ax_g.axhline(y=min_dis, color="#eab308", linestyle=":", linewidth=1.1, alpha=0.85)
+            ax_g.axhline(y=min_dis, color="#d97706", linestyle=":", linewidth=1.1, alpha=0.85)
 
             if r == 3:
-                ax_v.set_xlabel("Time (s)", color="#cbd5e1", fontsize=8)
-                ax_a.set_xlabel("Time (s)", color="#cbd5e1", fontsize=8)
-                ax_g.set_xlabel("Time (s)", color="#cbd5e1", fontsize=8)
+                ax_v.set_xlabel("Time (s)", color="#475569", fontsize=8)
+                ax_a.set_xlabel("Time (s)", color="#475569", fontsize=8)
+                ax_g.set_xlabel("Time (s)", color="#475569", fontsize=8)
 
             lines_v, lines_a, lines_g = [], [], []
             cars = city.cars if city.cars else []
             for idx, car in enumerate(cars):
                 if getattr(car, 'is_reckless', False):
-                    color = "#ef4444"
+                    color = "#dc2626"
                     lw = 1.6
                 elif idx == 0:
-                    color = "#38bdf8"
+                    color = "#0284c7"
                     lw = 1.3
                 elif getattr(car, 'is_rl', False) or idx == 1:
-                    color = "#22c55e"
+                    color = "#16a34a"
                     lw = 1.4
                 elif idx == len(cars) - 1:
-                    color = "#94a3b8"
+                    color = "#64748b"
                     lw = 1.1
                 else:
-                    color = "#64748b"
+                    color = "#94a3b8"
                     lw = 0.8
                 
                 lv, = ax_v.plot([], [], color=color, linewidth=lw)
@@ -771,9 +749,11 @@ class RLControlWindow(ControlWindow):
     # TAB 3: DRIVER INTUITIVENESS & BENCHMARK SUITE
     # ==========================================================================
     def _build_intuitiveness_tab(self):
-        canvas = tk.Canvas(self.tab_intuitiveness, bg="#0f172a", highlightthickness=0)
+        canvas = tk.Canvas(self.tab_intuitiveness, bg="#f1f5f9", highlightthickness=0, yscrollincrement=1)
+        self.intuitiveness_canvas = canvas
         scrollbar = ttk.Scrollbar(self.tab_intuitiveness, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg="#0f172a")
+        scrollbar.bind("<Button-1>", lambda _e: self._cancel_scroll_anim(self.intuitiveness_canvas), add="+")
+        scrollable_frame = tk.Frame(canvas, bg="#f1f5f9")
 
         scrollable_frame.bind(
             "<Configure>",
@@ -784,34 +764,34 @@ class RLControlWindow(ControlWindow):
 
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        scrollbar.pack(side="right", fill="y", padx=(4, 6), pady=6)
 
         # 1. Header Card (Model File Name, Date, and Run Evaluation Button)
-        header_card = tk.Frame(scrollable_frame, bg="#111827", padx=16, pady=12)
+        header_card = tk.Frame(scrollable_frame, bg="#ffffff", padx=16, pady=14)
         header_card.pack(fill="x", padx=12, pady=(10, 10))
 
-        header_top = tk.Frame(header_card, bg="#111827")
+        header_top = tk.Frame(header_card, bg="#ffffff")
         header_top.pack(fill="x")
 
-        title_box = tk.Frame(header_top, bg="#111827")
+        title_box = tk.Frame(header_top, bg="#ffffff")
         title_box.pack(side="left", fill="x", expand=True)
 
         tk.Label(
             title_box,
             text="Driver Intuitiveness Metric Suite & Human Benchmark",
-            fg="#f8fafc",
-            bg="#111827",
+            fg="#0f172a",
+            bg="#ffffff",
             font=("Segoe UI", 12, "bold")
         ).pack(anchor="w")
 
-        meta_row = tk.Frame(title_box, bg="#111827")
+        meta_row = tk.Frame(title_box, bg="#ffffff")
         meta_row.pack(anchor="w", pady=(4, 0))
 
         self.intuitiveness_model_label = tk.Label(
             meta_row,
             text="Model: --",
-            fg="#38bdf8",
-            bg="#111827",
+            fg="#0284c7",
+            bg="#ffffff",
             font=("Consolas", 9, "bold")
         )
         self.intuitiveness_model_label.pack(side="left", padx=(0, 16))
@@ -819,13 +799,13 @@ class RLControlWindow(ControlWindow):
         self.intuitiveness_date_label = tk.Label(
             meta_row,
             text="Evaluated: --",
-            fg="#94a3b8",
-            bg="#111827",
+            fg="#64748b",
+            bg="#ffffff",
             font=("Consolas", 9)
         )
         self.intuitiveness_date_label.pack(side="left")
 
-        btn_box = tk.Frame(header_top, bg="#111827")
+        btn_box = tk.Frame(header_top, bg="#ffffff")
         btn_box.pack(side="right")
 
         self.btn_run_eval = ttk.Button(
@@ -837,14 +817,14 @@ class RLControlWindow(ControlWindow):
         self.btn_run_eval.pack(side="right")
 
         # 2. Per-Controller Benchmark Table Card
-        table_card = tk.Frame(scrollable_frame, bg="#111827", padx=16, pady=12)
+        table_card = tk.Frame(scrollable_frame, bg="#ffffff", padx=16, pady=14)
         table_card.pack(fill="x", padx=12, pady=(0, 10))
 
         tk.Label(
             table_card,
             text="11-Scenario Comprehensive Benchmark Results",
-            fg="#e2e8f0",
-            bg="#111827",
+            fg="#0f172a",
+            bg="#ffffff",
             font=("Segoe UI", 10, "bold")
         ).pack(anchor="w", pady=(0, 8))
 
@@ -882,34 +862,34 @@ class RLControlWindow(ControlWindow):
 
         self.intuitiveness_tree.pack(fill="x", expand=True)
 
-        self.intuitiveness_tree.tag_configure("rl_row", background="#1e293b", foreground="#38bdf8")
-        self.intuitiveness_tree.tag_configure("ref_row", background="#172554", foreground="#93c5fd")
-        self.intuitiveness_tree.tag_configure("norm_row", background="#0b1220", foreground="#e2e8f0")
+        self.intuitiveness_tree.tag_configure("rl_row", background="#f0fdf4", foreground="#16a34a")
+        self.intuitiveness_tree.tag_configure("ref_row", background="#eff6ff", foreground="#1d4ed8")
+        self.intuitiveness_tree.tag_configure("norm_row", background="#ffffff", foreground="#0f172a")
 
         # 3. Verdict & Named Criteria Card
-        verdict_card = tk.Frame(scrollable_frame, bg="#111827", padx=16, pady=12)
+        verdict_card = tk.Frame(scrollable_frame, bg="#ffffff", padx=16, pady=14)
         verdict_card.pack(fill="x", padx=12, pady=(0, 16))
 
         # Verdict Header Banner
-        banner_frame = tk.Frame(verdict_card, bg="#111827")
+        banner_frame = tk.Frame(verdict_card, bg="#ffffff")
         banner_frame.pack(fill="x", pady=(0, 10))
 
-        vbox_left = tk.Frame(banner_frame, bg="#111827")
+        vbox_left = tk.Frame(banner_frame, bg="#ffffff")
         vbox_left.pack(side="left")
 
         tk.Label(
             vbox_left,
             text="Autonomous Policy Intuitiveness Verdict",
-            fg="#f8fafc",
-            bg="#111827",
+            fg="#0f172a",
+            bg="#ffffff",
             font=("Segoe UI", 11, "bold")
         ).pack(anchor="w")
 
         self.verdict_sublabel = tk.Label(
             vbox_left,
             text="Criteria dynamically evaluated from multi-scenario benchmark logs.",
-            fg="#94a3b8",
-            bg="#111827",
+            fg="#64748b",
+            bg="#ffffff",
             font=("Segoe UI", 8)
         )
         self.verdict_sublabel.pack(anchor="w", pady=(2, 0))
@@ -917,8 +897,8 @@ class RLControlWindow(ControlWindow):
         self.verdict_label = tk.Label(
             banner_frame,
             text="--",
-            fg="#94a3b8",
-            bg="#1f2937",
+            fg="#64748b",
+            bg="#f1f5f9",
             font=("Consolas", 14, "bold"),
             padx=14,
             pady=4
@@ -926,7 +906,7 @@ class RLControlWindow(ControlWindow):
         self.verdict_label.pack(side="right")
 
         # Named Criteria Grid
-        crit_grid = tk.Frame(verdict_card, bg="#111827")
+        crit_grid = tk.Frame(verdict_card, bg="#ffffff")
         crit_grid.pack(fill="x", pady=(6, 0))
         crit_grid.columnconfigure(1, weight=1)
 
@@ -935,8 +915,8 @@ class RLControlWindow(ControlWindow):
             badge_lbl = tk.Label(
                 crit_grid,
                 text="--",
-                fg="#94a3b8",
-                bg="#1f2937",
+                fg="#64748b",
+                bg="#f1f5f9",
                 font=("Consolas", 9, "bold"),
                 width=6,
                 pady=2
@@ -944,14 +924,14 @@ class RLControlWindow(ControlWindow):
             badge_lbl.grid(row=row_idx, column=0, padx=(0, 10), pady=4, sticky="w")
             setattr(self, f"crit_badge_{key}", badge_lbl)
 
-            info_frame = tk.Frame(crit_grid, bg="#111827")
+            info_frame = tk.Frame(crit_grid, bg="#ffffff")
             info_frame.grid(row=row_idx, column=1, sticky="w", pady=4)
 
             tk.Label(
                 info_frame,
                 text=f"{spec['title']} (Target: {spec['target']})",
-                fg="#e2e8f0",
-                bg="#111827",
+                fg="#0f172a",
+                bg="#ffffff",
                 font=("Segoe UI", 9, "bold")
             ).pack(anchor="w")
 
@@ -959,15 +939,15 @@ class RLControlWindow(ControlWindow):
                 info_frame,
                 text=spec['desc'],
                 fg="#64748b",
-                bg="#111827",
+                bg="#ffffff",
                 font=("Segoe UI", 8)
             ).pack(anchor="w")
 
             val_lbl = tk.Label(
                 crit_grid,
                 text="--",
-                fg="#38bdf8",
-                bg="#111827",
+                fg="#0284c7",
+                bg="#ffffff",
                 font=("Consolas", 9, "bold")
             )
             val_lbl.grid(row=row_idx, column=2, padx=(10, 0), pady=4, sticky="e")
@@ -983,7 +963,7 @@ class RLControlWindow(ControlWindow):
         if hasattr(self, 'status_bar') and self.status_bar:
             self.status_bar.config(
                 text="Running full 10-scenario Driver Intuitiveness evaluation suite in background...",
-                fg="#38bdf8"
+                fg="#0284c7"
             )
 
         threading.Thread(target=self._run_evaluation_worker, daemon=True).start()
@@ -1021,7 +1001,7 @@ class RLControlWindow(ControlWindow):
         if hasattr(self, 'status_bar') and self.status_bar:
             self.status_bar.config(
                 text="✓ Driver Intuitiveness evaluation completed and metrics updated.",
-                fg="#4ade80"
+                fg="#16a34a"
             )
 
     def _on_evaluation_error(self, err):
@@ -1109,9 +1089,9 @@ class RLControlWindow(ControlWindow):
 
             if lbl_badge:
                 if passed:
-                    lbl_badge.config(text="PASS", fg="#22c55e", bg="#064e3b")
+                    lbl_badge.config(text="PASS", fg="#16a34a", bg="#dcfce7")
                 else:
-                    lbl_badge.config(text="FAIL", fg="#ef4444", bg="#7f1d1d")
+                    lbl_badge.config(text="FAIL", fg="#dc2626", bg="#fee2e2")
             if lbl_val:
                 lbl_val.config(text=spec['format_val'](rl_data, overall))
 
@@ -1120,30 +1100,30 @@ class RLControlWindow(ControlWindow):
         if all_passed:
             self.verdict_label.config(
                 text=verdict_str,
-                fg="#22c55e",
-                bg="#064e3b"
+                fg="#16a34a",
+                bg="#dcfce7"
             )
             if hasattr(self, "verdict_sublabel"):
                 self.verdict_sublabel.config(
                     text="Policy satisfies all 5 automotive comfort, safety & intuitiveness criteria.",
-                    fg="#86efac"
+                    fg="#15803d"
                 )
         else:
             self.verdict_label.config(
                 text=verdict_str,
-                fg="#ef4444",
-                bg="#7f1d1d"
+                fg="#dc2626",
+                bg="#fee2e2"
             )
             if hasattr(self, "verdict_sublabel"):
                 self.verdict_sublabel.config(
                     text="Policy failed one or more intuitiveness / safety criteria. Model retraining required.",
-                    fg="#fca5a5"
+                    fg="#b91c1c"
                 )
 
     def _log_error(self, message):
         print(f"[GUI ERROR] {message}", file=sys.stderr)
         if hasattr(self, 'status_bar') and self.status_bar:
-            self.status_bar.config(text=f"⚠ {message}", fg="#f87171")
+            self.status_bar.config(text=f"⚠ {message}", fg="#dc2626")
 
     def _on_notebook_tab_changed(self, _event=None):
         try:
@@ -1438,23 +1418,35 @@ class RLControlWindow(ControlWindow):
             total_energy_accbcc = sum(car.energy_used for car in self.city_accbcc.cars)
             total_energy_rl = sum(car.energy_used for car in self.city_rl.cars)
 
-            self.energy_label_acc.config(text=f"Energy {total_energy_acc:.4f} kWh")
-            self.energy_label_bcc.config(text=f"Energy {total_energy_bcc:.4f} kWh")
-            self.energy_label_accbcc.config(text=f"Energy {total_energy_accbcc:.4f} kWh")
-            self.energy_label_rl.config(text=f"Energy {total_energy_rl:.4f} kWh")
+            avg_energy_acc = total_energy_acc / len(self.city_acc.cars) if self.city_acc.cars else 0.0
+            avg_energy_bcc = total_energy_bcc / len(self.city_bcc.cars) if self.city_bcc.cars else 0.0
+            avg_energy_accbcc = total_energy_accbcc / len(self.city_accbcc.cars) if self.city_accbcc.cars else 0.0
+            avg_energy_rl = total_energy_rl / len(self.city_rl.cars) if self.city_rl.cars else 0.0
+
+            if hasattr(self, 'energy_label_acc') and self.energy_label_acc:
+                self.energy_label_acc.config(text=f"Energy {total_energy_acc:.4f} kWh")
+            if hasattr(self, 'energy_label_bcc') and self.energy_label_bcc:
+                self.energy_label_bcc.config(text=f"Energy {total_energy_bcc:.4f} kWh")
+            if hasattr(self, 'energy_label_accbcc') and self.energy_label_accbcc:
+                self.energy_label_accbcc.config(text=f"Energy {total_energy_accbcc:.4f} kWh")
+            if hasattr(self, 'energy_label_rl') and self.energy_label_rl:
+                self.energy_label_rl.config(text=f"Energy {total_energy_rl:.4f} kWh")
 
             def get_avg_v(city):
                 return sum(car.velocity for car in city.cars) / len(city.cars) if city.cars else 0.0
 
-            self.meta_acc.config(text=f"Cars {len(self.city_acc.cars):02d} | Avg v {get_avg_v(self.city_acc):05.2f} m/s")
-            self.meta_bcc.config(text=f"Cars {len(self.city_bcc.cars):02d} | Avg v {get_avg_v(self.city_bcc):05.2f} m/s")
-            self.meta_accbcc.config(text=f"Cars {len(self.city_accbcc.cars):02d} | Avg v {get_avg_v(self.city_accbcc):05.2f} m/s")
-            self.meta_rl.config(text=f"Cars {len(self.city_rl.cars):02d} | Avg v {get_avg_v(self.city_rl):05.2f} m/s")
+            # Updated road card metadata: Avg Energy and Avg Velocity (number of cars removed)
+            self.meta_acc.config(text=f"Avg Energy: {avg_energy_acc:.4f} kWh  |  Avg Velocity: {get_avg_v(self.city_acc):.2f} m/s")
+            self.meta_bcc.config(text=f"Avg Energy: {avg_energy_bcc:.4f} kWh  |  Avg Velocity: {get_avg_v(self.city_bcc):.2f} m/s")
+            self.meta_accbcc.config(text=f"Avg Energy: {avg_energy_accbcc:.4f} kWh  |  Avg Velocity: {get_avg_v(self.city_accbcc):.2f} m/s")
+            self.meta_rl.config(text=f"Avg Energy: {avg_energy_rl:.4f} kWh  |  Avg Velocity: {get_avg_v(self.city_rl):.2f} m/s")
 
-            # Global metrics strip update
-            total_energy_all = total_energy_acc + total_energy_bcc + total_energy_accbcc + total_energy_rl
-            self.metric_value_total.config(text=f"{total_energy_all:08.4f} kWh")
-            self.metric_value_vel.config(text=f"{get_avg_v(self.city_rl):05.2f} m/s")
+            # Global metrics strip update if present
+            if hasattr(self, 'metric_value_total') and self.metric_value_total is not None:
+                total_energy_all = total_energy_acc + total_energy_bcc + total_energy_accbcc + total_energy_rl
+                self.metric_value_total.config(text=f"{total_energy_all:08.4f} kWh")
+            if hasattr(self, 'metric_value_vel') and self.metric_value_vel is not None:
+                self.metric_value_vel.config(text=f"{get_avg_v(self.city_rl):05.2f} m/s")
 
             # Live status bar speed update for human-driven vehicle
             if hasattr(self, 'status_bar') and self.status_bar:

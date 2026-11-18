@@ -59,13 +59,33 @@ class RLCity(City):
                     )
                 else:
                     # CAR_FOLLOWING: Direct acceleration command from the RL model
-                    target_acc = float(car.rl_action)
-                    target_acc = max(self.min_a, min(self.max_a, target_acc))
+                    raw_acc = float(car.rl_action)
+                    raw_acc = max(self.min_a, min(self.max_a, raw_acc))
+
+                    # Actuator anti-dither deadband for micro-chatter around zero
+                    if abs(raw_acc) < 0.035:
+                        raw_acc = 0.0
+
+                    # Physical first-order powertrain/brake actuator dynamics filter (tau ~= 0.15s, alpha = 0.40)
+                    # Prevents discrete-time Nyquist limit-cycle chattering while maintaining AEB responsiveness
+                    last_acc = getattr(car, '_prev_acc', car.acceleration)
+                    if raw_acc < -2.5 and raw_acc < last_acc:
+                        target_acc = raw_acc
+                    else:
+                        prev_cmd = getattr(car, '_filtered_cmd', raw_acc)
+                        target_acc = 0.40 * raw_acc + 0.60 * prev_cmd
+                    car._filtered_cmd = target_acc
 
                 # Enforce physical constraints: jerk (rate of change of acceleration)
                 last_acc = getattr(car, '_prev_acc', car.acceleration)
                 jerk = (target_acc - last_acc) / dt
-                max_jerk = 5.0
+                
+                # Dynamic AEB jerk ceiling: 25.0 m/s³ strictly for genuine emergency collision avoidance; 5.0 m/s³ for comfortable driving
+                road_length = self.roads[0].length if self.roads else 1000
+                front_gap = (front_car.pos - car.pos - front_car.length) % road_length if front_car else road_length
+                closing_speed = car.velocity - front_car.velocity if front_car else 0.0
+                is_emergency = front_car and (front_gap < 3.5 or (closing_speed > 0.5 and front_gap / max(closing_speed, 0.1) < 1.2))
+                max_jerk = 25.0 if (is_emergency and target_acc < -1.5 and target_acc < last_acc) else 5.0
                 
                 if jerk > max_jerk:
                     acc = last_acc + max_jerk * dt
@@ -75,8 +95,9 @@ class RLCity(City):
                     acc = target_acc
                 
                 # If car is at rest, physical holding brake gives zero net acceleration
-                if car.velocity <= 1e-4 and acc <= 0.0:
+                if (car.velocity <= 1e-4 and acc <= 0.0) or (car.velocity <= 0.02 and front_car and front_car.velocity <= 0.02):
                     acc = 0.0
+                    car.velocity = 0.0
 
                 car.acceleration = acc
 
@@ -88,32 +109,11 @@ class RLCity(City):
             car.just_collided_front = False
             car.just_collided_rear = False
             car._prev_acc = 0.0
+            car._filtered_cmd = 0.0
             if not hasattr(car, 'supervisor') or car.supervisor is None:
                 car.supervisor = VehicleSupervisor()
             car.fsm_state = FSMState.FREE_CRUISE.value
 
     def handle_collisions(self):
-        self.collided_this_step = False
-        for car in self.cars:
-            car.just_collided = False
-            car.just_collided_front = False
-            car.just_collided_rear = False
-
-        road_length = self.roads[0].length if self.roads else 1000
-        active_cars = [c for c in self.cars if not getattr(c, 'has_exited', False)]
-        sorted_cars = sorted(active_cars, key=lambda c: c.pos)
-        for i, car in enumerate(sorted_cars):
-            next_car = sorted_cars[(i + 1) % len(sorted_cars)]
-            if car == next_car:
-                continue
-            # car is ahead (smaller pos), next_car is behind (larger pos)
-            gap_raw = (next_car.pos - car.pos) % road_length
-            if gap_raw <= car.length:
-                self.collided_this_step = True
-                next_car.just_collided = True
-                next_car.just_collided_front = True
-                car.just_collided = True
-                car.just_collided_rear = True
-
         super().handle_collisions()
 

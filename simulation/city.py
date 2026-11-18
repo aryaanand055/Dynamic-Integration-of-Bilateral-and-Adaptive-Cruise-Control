@@ -77,6 +77,12 @@ class City:
         self.min_gap = min_gap
         self.rear_cutout_time = None
         self.car_velocity_profiles = {}
+        self.collided_this_step = False
+        for car in self.cars:
+            car.just_collided = False
+            car.just_collided_front = False
+            car.just_collided_rear = False
+            car._filtered_cmd = 0.0
 
     def get_perceived_car_states(self):
         """
@@ -111,6 +117,11 @@ class City:
         # Run one simulation step with real dt
         if dt is None:
             dt = self.dt
+        self.collided_this_step = False
+        for car in self.cars:
+            car.just_collided = False
+            car.just_collided_front = False
+            car.just_collided_rear = False
         if hasattr(self, 'rear_cutout_time') and self.rear_cutout_time is not None:
             if round(self.step_count * dt, 3) >= self.rear_cutout_time:
                 if len(self.cars) > 1 and not getattr(self.cars[-1], 'has_exited', False):
@@ -446,14 +457,30 @@ class City:
                 acc = velocity_factor + gap_factor + d_vel_factor
                 acc = max(self.min_a, min(self.max_a, acc))
 
-            # Add some hysterises to accleration
+            # Physical first-order powertrain/brake actuator dynamics filter (tau ~= 0.15s, alpha = 0.40)
+            # Models authentic engine/brake lag uniformly across all vehicle models
             last_acc = car.acceleration
-            jerk  = (acc - last_acc) / dt
-            max_jerk = 5
+            if acc < -2.5 and acc < last_acc:
+                target_acc = acc  # AEB immediate brake pass-through
+            else:
+                prev_cmd = getattr(car, '_filtered_cmd', acc)
+                target_acc = 0.40 * acc + 0.60 * prev_cmd
+            car._filtered_cmd = target_acc
+
+            # Enforce physical constraints: jerk (rate of change of acceleration)
+            jerk = (target_acc - last_acc) / dt
+            max_jerk = 25.0 if (target_acc < -1.5 and target_acc < last_acc) else 5.0
             if jerk > max_jerk:
                 acc = last_acc + max_jerk * dt
             elif jerk < -max_jerk:
                 acc = last_acc - max_jerk * dt
+            else:
+                acc = target_acc
+
+            # Physical holding brake at rest
+            if car.velocity <= 1e-4 and acc <= 0.0:
+                acc = 0.0
+
             car.acceleration = acc
             
 
@@ -588,6 +615,12 @@ class City:
         self.handle_collisions()
 
     def handle_collisions(self):
+        self.collided_this_step = False
+        for car in self.cars:
+            car.just_collided = False
+            car.just_collided_front = False
+            car.just_collided_rear = False
+
         # Sort cars by position to check for overlaps (circular road)
         road_length = self.roads[0].length if self.roads else 1000
         active_cars = [c for c in self.cars if not getattr(c, 'has_exited', False)]
@@ -598,9 +631,14 @@ class City:
                 continue
             min_gap = self.min_gap  # Use instance parameter
 
-            # Calculate gap considering circular road
+            # Calculate gap considering circular road: car is ahead, next_car is behind
             hasCollided = ((next_car.pos - car.pos) % road_length) <= car.length
             if hasCollided:
+                self.collided_this_step = True
+                car.just_collided = True
+                car.just_collided_rear = True
+                next_car.just_collided = True
+                next_car.just_collided_front = True
                 v1 = car.velocity
                 v2 = next_car.velocity
                 e = car.CoR if hasattr(car, 'CoR') else 0.3

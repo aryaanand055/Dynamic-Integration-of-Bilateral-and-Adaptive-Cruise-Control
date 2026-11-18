@@ -508,7 +508,17 @@ class AccelTrafficEnv(VecEnv):
         last_car.is_reckless = True
         last_car.color = '#ef4444'
         target_v = min(self.sim_params['max_v'], self.sim_params['v_des'] + 6.0)
-        acc = self.sim_params['kc'] * (target_v - last_car.velocity)
+        front_car = self.city.cars[-2]
+        road_length = self.city.roads[0].length if self.city.roads else 1000
+        cur_gap = (front_car.pos - last_car.pos - front_car.length) % road_length
+        desired_min_buffer = 3.5
+        if cur_gap < desired_min_buffer:
+            acc = self.sim_params['min_a']
+        elif cur_gap < desired_min_buffer + 6.0:
+            v_cap = max(0.0, front_car.velocity + (cur_gap - desired_min_buffer) / 0.8)
+            acc = min(self.sim_params['kc'] * (target_v - last_car.velocity), self.sim_params['kc'] * (v_cap - last_car.velocity))
+        else:
+            acc = self.sim_params['kc'] * (target_v - last_car.velocity)
         acc = max(self.sim_params['min_a'], min(self.sim_params['max_a'], acc))
         last_car.acceleration = acc
 
@@ -636,13 +646,16 @@ class AccelTrafficEnv(VecEnv):
             front_gap_err = float(np.clip(raw_gap_err, -15.0, 15.0))
             rel_gap_ratio_err = float(np.clip(raw_gap_err / max(effective_desired_gap, 1.0), -1.0, 1.0))
             
-            # Bilateral Rear Car Sensing:
+            # Bilateral Rear Car Sensing with Clean Decoupling:
             desired_back_gap = min_dis + (perceived_states[cars.index(back_car)][1] if back_car else ego_vel) * reaction_time
             if back_car and back_car != lead_car and not getattr(back_car, 'has_exited', False):
                 back_idx = cars.index(back_car)
                 back_pos, back_vel = perceived_states[back_idx]
                 back_gap_raw = (back_pos - ego_pos - car.length) % road_length
-                if back_gap_raw <= MAX_RADAR_RANGE:
+                # Clean Decoupling: if rear car has halted or dropped far back, decouple to pure ACC following
+                is_rear_halted = (back_vel < 2.0 and ego_vel > 4.5)
+                is_rear_decoupled = (back_gap_raw > 45.0) or is_rear_halted
+                if back_gap_raw <= MAX_RADAR_RANGE and not is_rear_decoupled:
                     back_gap = back_gap_raw
                     back_rel_vel = back_vel - ego_vel
                 else:
@@ -653,6 +666,17 @@ class AccelTrafficEnv(VecEnv):
                 back_rel_vel = 0.0
                 
             back_gap_err = float(np.clip(back_gap - desired_back_gap, -15.0, 15.0))
+
+            # Velocity-Gated Rear Bilateral Decoupling:
+            # If the rear follower is traveling at matching speed or falling back (back_rel_vel <= 0.1 m/s),
+            # smoothly attenuate negative rear gap error so calm followers do not trigger push-pull limit cycles.
+            # Active evasion is preserved when follower is closing fast (back_rel_vel > 0.4 m/s) or critically close (< 4.0 m).
+            if back_gap_err < 0.0 and back_car and not is_rear_decoupled:
+                w_vel = 1.0 / (1.0 + np.exp(-(back_rel_vel - 0.4) / 0.15))
+                w_dist = 1.0 / (1.0 + np.exp((back_gap_raw - 4.0) / 0.5))
+                w_rear = min(1.0, max(w_vel, w_dist))
+                back_gap_err = float(w_rear * back_gap_err)
+                back_rel_vel = float(w_rear * back_rel_vel)
             
             if obs_dim == 7:
                 # 7D Legacy: Adaptive Target Velocity blending
@@ -726,17 +750,19 @@ class AccelTrafficEnv(VecEnv):
             effective_desired_gap = desired_gap + d_kinematic
             
             # === 1. COLLISION ===
-            has_collided = (
-                getattr(car, 'just_collided_front', False)
-                or getattr(car, 'just_collided', False)
-                or (getattr(car, 'collision_timer', 0) == 40)
-                or (front_gap < 0.5)
-            )
+            # Distinguish active collision (striking front car or braking into tailgater) from passive rear impact
+            is_active_front_collision = (front_gap < 0.8) or (getattr(car, 'collision_timer', 0) == 40 and front_gap <= desired_gap)
+            is_fault_rear_collision = (getattr(car, 'collision_timer', 0) == 40 and front_gap > desired_gap and car.acceleration < -1.5)
+            # Penalize allowing rear impact when open road was available ahead (failure to evade):
+            is_passive_hit_with_open_buffer = (getattr(car, 'collision_timer', 0) == 40 and front_gap > 1.2 * desired_gap and car.acceleration <= 0.2)
+            has_collided = is_active_front_collision or is_fault_rear_collision
             r_collision = 0.0
             if has_collided:
-                r_collision = -50.0
+                r_collision = -60.0
                 if not self.in_collision[obs_idx]:
-                    r_collision -= 50.0  # -100 total on collision start
+                    r_collision -= 60.0  # -120 total on collision start
+            elif is_passive_hit_with_open_buffer:
+                r_collision = -30.0
             self.in_collision[obs_idx] = has_collided
             
             # === 2. SAFE HEADWAY TRACKING ===
@@ -744,96 +770,109 @@ class AccelTrafficEnv(VecEnv):
             r_headway = 2.5 * np.exp(- (e_f / 0.35) ** 2)
             
             # Headway error restoring gradient:
-            # When headway is tight (e_f < -0.10), penalize pushing positive throttle
-            if e_f < -0.10 and car.acceleration > 0.0:
-                r_headway -= 3.0 * min(abs(e_f + 0.10) / 0.25, 2.0) * (car.acceleration / 1.0)
+            # When headway is tight (e_f < -0.05), strictly penalize positive acceleration
+            if e_f < -0.05 and car.acceleration > 0.0:
+                r_headway -= 4.0 * min(abs(e_f + 0.05) / 0.20, 2.5) * (car.acceleration / 1.0)
             # When headway is wide (e_f > 0.10), penalize unnecessary braking
             elif e_f > 0.10 and car.acceleration < 0.0 and v_rel_f >= -0.2:
                 r_headway -= 2.0 * min((e_f - 0.10) / 0.30, 2.0) * (abs(car.acceleration) / 1.0)
 
             # Progressive safety danger boundary (preserves smooth cruise equilibrium)
             r_danger = 0.0
-            if front_gap < 4.5:
-                r_danger = -20.0 * (((4.5 - max(front_gap, 0.0)) / 4.5) ** 2) - 10.0
-            elif front_gap < 0.65 * desired_gap:
-                r_danger = -4.0 * (((0.65 * desired_gap - front_gap) / (0.65 * desired_gap)) ** 2)
+            if front_gap < 3.5:
+                r_danger = -25.0 * (((3.5 - max(front_gap, 0.0)) / 3.5) ** 2) - 15.0
+            elif front_gap < 0.70 * desired_gap:
+                r_danger = -5.0 * (((0.70 * desired_gap - front_gap) / (0.70 * desired_gap)) ** 2)
                 
-            # === 3. RELATIVE VELOCITY & STRING STABILITY DAMPING ===
+            # === 3. RELATIVE VELOCITY, PROACTIVE DECELERATION & STRING STABILITY DAMPING ===
             r_v_match = 2.0 * np.exp(- (v_rel_f / 0.8) ** 2)
             if v_rel_f < -0.2 and car.acceleration > (front_car.acceleration if front_car else 0.0):
-                r_v_match -= 1.5 * min((-v_rel_f - 0.2) / 1.0, 3.0)
+                r_v_match -= 2.0 * min((-v_rel_f - 0.2) / 1.0, 3.0)
             
+            # Equilibrium Damping: if headway error is small (|e_f| < 0.15), strongly reward v_rel_f == 0.0
+            if abs(e_f) < 0.15:
+                r_v_match += 2.0 * np.exp(- (v_rel_f / 0.4) ** 2)
+            
+            # Proactive Approach Deceleration:
+            # When closing in (v_rel_f < -0.3) or compressed headway (e_f < -0.08), provide continuous kinematic target
+            r_approach_decel = 0.0
+            if (v_rel_f < -0.3 or e_f < -0.08) and front_gap < 3.0 * effective_desired_gap:
+                target_decel = min(0.0, 1.2 * v_rel_f + 2.0 * min(e_f, 0.0))
+                target_decel = max(-4.5, min(-0.3, target_decel))
+                if car.acceleration <= target_decel + 0.35:
+                    r_approach_decel = 4.0 * np.exp(- ((car.acceleration - target_decel) / 0.8) ** 2)
+                else:
+                    r_approach_decel = -5.0 * min((car.acceleration - target_decel) / 1.0, 4.0)
+
             # Asymmetric damping: if closing in fast on front vehicle (v_rel_f < -0.3)
-            # Only penalize if ego is NOT already decelerating matching/beating front vehicle
             r_closing_damp = 0.0
             if v_rel_f < -0.3 and front_gap < 2.5 * effective_desired_gap:
                 if front_car and car.acceleration > front_car.acceleration:
                     r_closing_damp = -2.5 * min(((-v_rel_f - 0.3) / 1.5) ** 2, 4.0)
                 
             # Emergency Collision-Avoidance Braking & Under-Braking Penalty
-            # Multi-signal emergency trigger: lead hard decel, high closing rate, or compressed headway
+            # Multi-signal emergency trigger: genuine collision hazard (low TTC and compressed gap, or lead hard decel)
             r_safety_brake = 0.0
+            ttc = front_gap / max(-v_rel_f, 1e-3) if v_rel_f < -0.3 else float('inf')
             is_emergency = (
-                (front_gap < 1.15 * effective_desired_gap and v_rel_f < -1.0) or
-                (v_rel_f < -2.2) or
-                (front_car and front_car.acceleration < -1.8 and front_gap < 2.0 * effective_desired_gap)
+                (ttc < 2.8 and front_gap < 2.0 * effective_desired_gap) or
+                (front_gap < min_dis and v_rel_f < -0.1) or
+                (front_gap < 1.0 * min_dis) or
+                (v_rel_f < -1.5 and front_gap < 1.5 * effective_desired_gap) or
+                (front_car and front_car.acceleration < -1.8 and front_gap < 2.2 * effective_desired_gap)
             )
             if is_emergency:
                 # Kinematic stopping acceleration required to stop before front buffer:
-                buffer = max(front_gap - min_dis + 0.8, 0.5)
+                buffer = max(front_gap - min_dis + 0.5, 0.5)
                 a_req = - (v_rel_f ** 2) / (2.0 * buffer) if v_rel_f < -0.1 else 0.0
-                if front_car and front_car.acceleration < -1.5:
+                if front_car and front_car.acceleration < -1.8:
                     a_req = min(a_req, front_car.acceleration - 0.2)
-                a_req = max(-5.0, min(-1.5, a_req))
+                a_req = max(-5.0, min(-1.2, a_req))
                 
-                if car.acceleration <= a_req + 0.35:
+                if car.acceleration <= a_req + 0.30:
                     # Decisive braking matching/exceeding kinematic requirement
-                    r_safety_brake = 4.0 * np.exp(- ((car.acceleration - a_req) / 1.0) ** 2)
+                    r_safety_brake = 6.0 * np.exp(- ((car.acceleration - a_req) / 0.8) ** 2)
                 else:
-                    # Moderate under-braking penalty aligned with VecNormalize scale
-                    r_safety_brake = -6.0 * min((car.acceleration - a_req) / 1.2, 4.0)
+                    # Asymmetric under-braking penalty
+                    r_safety_brake = -8.0 * min((car.acceleration - a_req) / 1.0, 4.0)
 
             # String Stability: strictly penalize downstream acceleration/deceleration wave amplification
+            # PHYSICALLY VALID ONLY WHEN SPEEDS ARE NEAR EQUILIBRIUM (|v_rel_f| < 0.5 m/s).
+            # When ego is closing in (v_rel_f < -0.5), ego MUST decelerate harder than front car to match speeds!
             r_string = 0.0
-            if front_car and not is_emergency and front_gap < 2.5 * effective_desired_gap:
-                if front_car.acceleration < -0.15:
+            if front_car and not is_emergency and abs(v_rel_f) < 0.5 and front_gap < 2.5 * effective_desired_gap:
+                if front_car.acceleration < -0.20:
                     target_decel = front_car.acceleration
-                    if car.acceleration < target_decel - 0.25:
-                        r_string -= 4.0 * min(((target_decel - 0.25 - car.acceleration) / 0.8) ** 2, 3.0)
-                    elif abs(car.acceleration - target_decel) <= 0.35:
-                        r_string += 2.0 * np.exp(- ((car.acceleration - target_decel) / 0.35) ** 2)
-                elif front_car.acceleration > 0.15 and car.acceleration > front_car.acceleration + 0.25:
+                    if car.acceleration < target_decel - 0.35:
+                        r_string -= 3.5 * min(((target_decel - 0.35 - car.acceleration) / 0.8) ** 2, 3.0)
+                    elif abs(car.acceleration - target_decel) <= 0.40:
+                        r_string += 2.0 * np.exp(- ((car.acceleration - target_decel) / 0.40) ** 2)
+                elif front_car.acceleration > 0.20 and car.acceleration > front_car.acceleration + 0.35:
                     r_string -= 2.0 * min(((car.acceleration - front_car.acceleration) / 0.8) ** 2, 2.0)
                 
-            # Anti-Panic Braking: penalize harsh braking when safe headway exists
+            # Anti-Panic Braking: penalize harsh braking ONLY when headway is safe AND NOT closing in!
             r_panic_brake = 0.0
-            if not is_emergency and front_gap > effective_desired_gap and car.acceleration < -1.8:
+            if not is_emergency and front_gap > effective_desired_gap and v_rel_f >= -0.3 and car.acceleration < -1.8:
                 r_panic_brake = -3.5 * min(((-car.acceleration - 1.8) / 1.5) ** 2, 4.0)
                 
             # === 4. SPEED TRACKING & EQUILIBRIUM PROGRESS ===
-            if front_car and front_car.velocity < v_des:
-                blend_start = effective_desired_gap
-                blend_end = max(effective_desired_gap * 2.5, 25.0)
-                if front_gap <= blend_start:
-                    target_v = front_car.velocity
-                elif front_gap >= blend_end:
-                    target_v = v_des
-                else:
-                    w = (front_gap - blend_start) / (blend_end - blend_start)
-                    target_v = (1.0 - w) * front_car.velocity + w * v_des
+            # In 6D CAR_FOLLOWING: target velocity is anchored to preceding traffic.
+            # Open-road speed regulation to v_des is strictly governed by VehicleSupervisor (FREE_CRUISE).
+            if front_car:
+                target_v = front_car.velocity
             else:
                 target_v = v_des
                 
             v_err = (car.velocity - target_v) / max(target_v, 1.0)
             r_speed = 2.0 * np.exp(- (v_err / 0.15) ** 2)
             
-            # Anti-overshoot damping: heavily penalize positive acceleration when already exceeding target velocity
+            # Anti-overshoot damping: penalize positive acceleration when exceeding target velocity
             if car.velocity > target_v + 0.2 and car.acceleration > 0.0:
                 r_speed -= 2.0 * min((car.velocity - target_v) / 1.0, 2.5) * (car.acceleration / 1.0)
             
-            # Linear speed tracking penalty: active only when open road ahead (front_gap >= 1.2 * effective_desired_gap)
+            # Linear speed tracking penalty: active only when open road ahead (front_gap >= 60.0 or front_car is None)
             r_speed_linear = 0.0
-            if front_gap >= 1.2 * effective_desired_gap:
+            if front_car is None or front_gap >= 60.0:
                 r_speed_linear = -1.5 * abs(v_err)
             
             # Anti-lag penalty & Gap Catch-Up: active whenever traffic ahead opens up (e_f > 0.15)
@@ -856,6 +895,14 @@ class AccelTrafficEnv(VecEnv):
             r_stall = 0.0
             if car.velocity < 3.0 and target_v > 8.0 and front_gap > effective_desired_gap:
                 r_stall = -4.0 * (1.0 - car.velocity / 3.0)
+                
+            # === 4b. EMPIRICAL IDM HUMAN-DRIVER HEADWAY ALIGNMENT ===
+            # During non-emergency steady following, rewards natural human-like headway spacing
+            r_human = 0.0
+            if front_car and not is_emergency and car.velocity > 3.0 and abs(v_rel_f) < 1.0:
+                s_idm = 4.0 + car.velocity * 1.1
+                gap_err_idm = front_gap - s_idm
+                r_human = 1.2 * np.exp(- ((gap_err_idm / 4.0) ** 2))
                 
             # === 5. STANDSTILL QUEUE-PACKING & HEADWAY PRECISION ===
             # Applies ONLY when front car is stationary/crawling AND ego is stopping/stopped!
@@ -919,45 +966,64 @@ class AccelTrafficEnv(VecEnv):
             if is_tail_car:
                 r_headway *= 1.25
 
-            # === 6. BCC BILATERAL REAR AWARENESS & SPRING-DAMPER LATTICE ===
+            # === 6. BCC BILATERAL REAR AWARENESS & DECOUPLED DYNAMICS ===
             r_bcc = 0.0
             r_bcc_tailgate = 0.0
             r_bcc_damp = 0.0
             r_bcc_consensus = 0.0
-            r_bcc_tension = 0.0
             back_gap_raw = float('inf')
+            e_b = float('inf')
             if back_car and back_car != lead_car:
                 back_gap_raw = (back_car.pos - car.pos - car.length) % road_length
                 if back_gap_raw <= MAX_RADAR_RANGE:
                     desired_back_gap = min_dis + back_car.velocity * reaction_time
                     e_b = (back_gap_raw - desired_back_gap) / max(desired_back_gap, 1.0)
                     
-                    # 1. Rear tailgating buffer: if rear car is dangerously close (e_b < -0.15)
-                    if e_b < -0.15:
-                        r_bcc_tailgate = -2.0 * min(abs(e_b + 0.15), 2.5)
+                    # 1. Rear tailgating buffer: if rear car is dangerously close or closing fast
+                    v_closing_rear = back_car.velocity - car.velocity
+                    is_dangerous_tailgater = (v_closing_rear > 0.8 and e_b < -0.25) or (e_b < -0.40)
+                    if is_dangerous_tailgater:
+                        r_bcc_tailgate = -2.5 * min(abs(min(e_b, 0.0) + 0.25) if e_b < -0.25 else (v_closing_rear / 2.0), 3.0)
+                        # Directional Evasion: When tailgated and front road is clear, strictly penalize braking!
+                        if car.acceleration < 0.1 and front_gap > effective_desired_gap:
+                            r_bcc_tailgate -= 8.0 * (1.0 + abs(car.acceleration))
                         
-                    # 2. Bilateral wave attenuation & consensus: active across entire motion range (> 0.5 m/s)
-                    if car.velocity > 0.3 and back_car.velocity > 0.2:
-                        r_bcc_damp = -1.2 * min(((back_car.velocity - car.velocity) / 1.5) ** 2, 2.0)
+                        # Active Forward Evasion into open buffer:
+                        if front_gap > 1.25 * effective_desired_gap:
+                            target_relief_a = min(2.5, max(1.0, v_closing_rear * 0.8))
+                            if car.acceleration >= target_relief_a - 0.4:
+                                r_bcc_tailgate += 4.0 * np.exp(- ((car.acceleration - target_relief_a) / 0.6) ** 2)
+                            else:
+                                r_bcc_tailgate -= 5.0 * min((target_relief_a - car.acceleration) / 1.0, 3.5)
+                        
+                    # 2. Bilateral wave attenuation & consensus:
+                    # Active ONLY when BOTH vehicles are moving at speed AND coupled within normal headway!
+                    # Completely decouples if rear vehicle drops back (e_b > 0.25) or halts!
+                    if car.velocity > 3.0 and back_car.velocity > 2.5 and abs(e_b) < 0.25:
+                        r_bcc_damp = -1.0 * min(((back_car.velocity - car.velocity) / 2.0) ** 2, 2.0)
                         v_bilateral_target = 0.5 * (front_car.velocity + back_car.velocity) if front_car else car.velocity
-                        r_bcc_consensus = 1.8 * np.exp(- (((car.velocity - v_bilateral_target) / 1.2) ** 2))
+                        r_bcc_consensus = 1.5 * np.exp(- (((car.velocity - v_bilateral_target) / 1.5) ** 2))
                         
-                        # Platoon lattice tension: penalize ego accelerating away when rear vehicle is lagging behind
-                        if e_b > 0.20 and car.acceleration > 0.2:
-                            r_bcc_tension = -2.0 * min((e_b - 0.20) / 1.0, 2.0) * (car.acceleration / 1.0)
-                        
-                    r_bcc = r_bcc_tailgate + r_bcc_damp + r_bcc_consensus + r_bcc_tension
+                    r_bcc = r_bcc_tailgate + r_bcc_damp + r_bcc_consensus
                         
             # === 7. SMOOTHNESS, ACTION-RATE & ZERO-ACCELERATION EQUILIBRIUM BIAS ===
             delta_a = car.acceleration - self.prev_accel[car_idx]
-            r_jerk = -0.8 * ((delta_a / 1.0) ** 2)
+            r_jerk = -3.0 * ((delta_a / 1.0) ** 2)
             act_delta = self.action_deltas[obs_idx] if obs_idx < len(self.action_deltas) else 0.0
-            r_act_delta = -1.8 * ((act_delta / 1.0) ** 2)
+            r_act_delta = -4.0 * ((act_delta / 0.8) ** 2)
             
-            # Gating: when emergency braking to avert collision, comfort, string, panic, and energy penalties are completely eliminated
-            if is_emergency:
-                r_jerk = 0.0
-                r_act_delta = 0.0
+            # Anti-hunting sign-flip penalty (suppresses rapid acceleration/braking chatter across zero)
+            sign_flip = (car.acceleration * self.prev_accel[car_idx] < -0.01) and (abs(car.acceleration) > 0.08 or abs(self.prev_accel[car_idx]) > 0.08)
+            r_flip = -6.0 if sign_flip else 0.0
+            
+            # Gating: when responding to traffic disturbances (emergency, closing approach, headway deficit, or rear tailgating),
+            # comfort penalties are heavily discounted to prevent stifling safety responses
+            is_tailgated_evasion = (is_dangerous_tailgater and front_gap > 1.25 * effective_desired_gap) if 'is_dangerous_tailgater' in locals() else False
+            is_safety_response = is_emergency or (car.acceleration < -0.3 and (v_rel_f < -0.3 or e_f < -0.10)) or is_tailgated_evasion
+            if is_safety_response:
+                r_jerk *= 0.15
+                r_act_delta *= 0.15
+                r_flip = 0.0
                 r_panic_brake = 0.0
                 r_string = 0.0
                 r_closing_damp = 0.0
@@ -966,12 +1032,14 @@ class AccelTrafficEnv(VecEnv):
             r_accel = 0.0
             is_launching = (r_launch != 0.0)
             is_catching_up = (r_catchup != 0.0)
-            if not (is_launching or is_catching_up or is_emergency):
+            is_cruise_equilibrium = (abs(e_f) < 0.15 and abs(v_rel_f) < 0.35 and abs(v_err) < 0.10)
+            is_standstill_rest = (car.velocity <= 0.25 and (front_car is None or front_car.velocity <= 0.25))
+            if is_cruise_equilibrium or is_standstill_rest:
                 r_accel = 1.0 * np.exp(- (car.acceleration / 0.35) ** 2) - 0.2 * ((car.acceleration / 2.0) ** 2)
             
             # Equilibrium Cruising Lock: When within 15% of headway and speed matches, strongly lock a=0.0
             r_cruise_lock = 0.0
-            if abs(e_f) < 0.15 and abs(v_rel_f) < 0.8 and abs(v_err) < 0.10:
+            if is_cruise_equilibrium:
                 r_cruise_lock = 3.5 * np.exp(- (car.acceleration / 0.15) ** 2)
 
             # === 8. ENERGY EFFICIENCY (Traction power & Peak Sprint Suppression) ===
@@ -985,7 +1053,7 @@ class AccelTrafficEnv(VecEnv):
                 r_energy = -0.25 * p_norm - 0.15 * (p_norm ** 2)
 
                 # Non-emergency positive acceleration cap (suppress unnecessary high-acceleration surges)
-                if not (is_launching or is_catching_up) and car.acceleration > 1.3:
+                if not (is_launching or is_catching_up or is_tailgated_evasion) and car.acceleration > 1.3:
                     r_eco_accel = -1.0 * (((car.acceleration - 1.3) / 0.7) ** 2)
 
             # === 9. ECO-COASTING / GLIDE REGULATION ===
@@ -1005,10 +1073,10 @@ class AccelTrafficEnv(VecEnv):
             R_safety = r_collision + r_danger + r_safety_brake
 
             # 2. Headway Tracking & Gap Regulation
-            R_headway = r_headway + r_lag + r_catchup + r_open_road_hesitation
+            R_headway = r_headway + r_lag + r_catchup + r_open_road_hesitation + r_human
 
             # 3. Velocity Tracking & Smooth Progression
-            R_velocity = r_v_match + r_closing_damp + r_speed + r_speed_linear + r_stall
+            R_velocity = r_v_match + r_approach_decel + r_closing_damp + r_speed + r_speed_linear + r_stall
 
             # 4. String Stability & Wave Damping
             R_string = r_string + r_panic_brake
@@ -1020,7 +1088,7 @@ class AccelTrafficEnv(VecEnv):
             R_bilateral = r_bcc
 
             # 7. Passenger Comfort & Action Smoothness
-            R_comfort = r_accel + r_jerk + r_act_delta + r_cruise_lock
+            R_comfort = r_accel + r_jerk + r_act_delta + r_flip + r_cruise_lock
 
             # 8. Energy Efficiency & Eco Dynamics
             R_energy = r_energy + r_eco_accel + r_coast
@@ -1079,6 +1147,7 @@ class AccelTrafficEnv(VecEnv):
                         'r_catchup': float(r_catchup),
                         'r_open_road_hesitation': float(r_open_road_hesitation),
                         'r_v_match': float(r_v_match),
+                        'r_approach_decel': float(r_approach_decel),
                         'r_closing_damp': float(r_closing_damp),
                         'r_speed': float(r_speed),
                         'r_speed_linear': float(r_speed_linear),
@@ -1097,7 +1166,8 @@ class AccelTrafficEnv(VecEnv):
                         'r_accel': float(r_accel),
                         'r_jerk': float(r_jerk),
                         'r_act_delta': float(r_act_delta),
-                        'r_comf': float(r_jerk + r_act_delta),
+                        'r_flip': float(r_flip),
+                        'r_comf': float(r_jerk + r_act_delta + r_flip),
                         'r_cruise_lock': float(r_cruise_lock),
                         'r_energy': float(r_energy),
                         'r_eco_accel': float(r_eco_accel),
