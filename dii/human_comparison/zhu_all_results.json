@@ -1,0 +1,79 @@
+{
+ "n_events": 1341,
+ "controllers": {
+  "Human (NGSIM)": {
+   "events_min_ttc_below_5s": 0.313944817300522,
+   "headway_mean": 1.6763432403087897,
+   "headway_p5": 0.7416707528433875,
+   "headway_p95": 3.044104869907825,
+   "headway_share_below_1s": 0.15623387976116562,
+   "jerk_mean_abs": 1.7150309651183435,
+   "collisions": 0,
+   "near_crash_0.5m": 2
+  },
+  "ACC": {
+   "events_min_ttc_below_5s": 0.3124533929903057,
+   "headway_mean": 1.5535899284460821,
+   "headway_p5": 1.183417425591665,
+   "headway_p95": 1.9217623590625525,
+   "headway_share_below_1s": 0.008080583432950617,
+   "jerk_mean_abs": 0.6773971667339381,
+   "collisions": 0,
+   "near_crash_0.5m": 1,
+   "rmspe_spacing_mean": 0.33951376019370805,
+   "rmspe_speed_mean": 0.11728524445377579,
+   "ks_ttc": 0.11738682352207419,
+   "ks_headway": 0.2587516487046664,
+   "ks_jerk": 0.3608993499720809,
+   "ks_mean": 0.2456792740662738
+  },
+  "BCC": {
+   "events_min_ttc_below_5s": 0.2930648769574944,
+   "headway_mean": 1.552252265183357,
+   "headway_p5": 1.186310112251573,
+   "headway_p95": 1.899618767355062,
+   "headway_share_below_1s": 0.007410290388244851,
+   "jerk_mean_abs": 0.7070181233194314,
+   "collisions": 0,
+   "near_crash_0.5m": 0,
+   "rmspe_spacing_mean": 0.3396317466711432,
+   "rmspe_speed_mean": 0.1134290524284168,
+   "ks_ttc": 0.12386860254274373,
+   "ks_headway": 0.2646329296130525,
+   "ks_jerk": 0.3489369321702705,
+   "ks_mean": 0.24581282144202224
+  },
+  "ACC+BCC": {
+   "events_min_ttc_below_5s": 0.29381058911260255,
+   "headway_mean": 1.5527860355637688,
+   "headway_p5": 1.1861555198859972,
+   "headway_p95": 1.9025856874791398,
+   "headway_share_below_1s": 0.007499868721408295,
+   "jerk_mean_abs": 0.6979145913768856,
+   "collisions": 0,
+   "near_crash_0.5m": 0,
+   "rmspe_spacing_mean": 0.33952337442393643,
+   "rmspe_speed_mean": 0.1138893382141195,
+   "ks_ttc": 0.12350139560555207,
+   "ks_headway": 0.2634931225462487,
+   "ks_jerk": 0.3530539408507258,
+   "ks_mean": 0.24668281966750882
+  },
+  "TD3_56": {
+   "events_min_ttc_below_5s": 0.0976882923191648,
+   "headway_mean": 1.7301113616670203,
+   "headway_p5": 1.270460670440416,
+   "headway_p95": 2.9010240778121843,
+   "headway_share_below_1s": 0.00829371808771881,
+   "jerk_mean_abs": 0.5208238166474026,
+   "collisions": 0,
+   "near_crash_0.5m": 0,
+   "rmspe_spacing_mean": 0.31348659603645956,
+   "rmspe_speed_mean": 0.09308508035940403,
+   "ks_ttc": 0.16554199568450384,
+   "ks_headway": 0.2822891279703712,
+   "ks_jerk": 0.40955040767181083,
+   "ks_mean": 0.285793843775562
+  }
+ }
+}
